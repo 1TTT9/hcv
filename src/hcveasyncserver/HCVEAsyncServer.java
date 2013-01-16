@@ -55,10 +55,10 @@ class CPP{
     {}
 }
 
-class AAA{
+class BBB{
     private int key;
     
-    public AAA(int key)
+    public BBB(int key)
     {
         this.key = key;
     }
