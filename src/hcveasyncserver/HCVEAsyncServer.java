@@ -12,10 +12,9 @@ import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.channel.ChannelPipeline;
 import org.jboss.netty.channel.ChannelPipelineFactory;
 import org.jboss.netty.channel.Channel;
-import org.jboss.netty.channel.Channels;
+//import org.jboss.netty.channel.Channels;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.group.ChannelGroup;
-
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 import org.jboss.netty.handler.execution.OrderedMemoryAwareThreadPoolExecutor;
 
@@ -34,6 +33,9 @@ import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.SimpleChannelHandler;
 
 import static org.jboss.netty.buffer.ChannelBuffers.*;
+import static org.jboss.netty.channel.Channels.*;
+
+import org.jboss.netty.handler.codec.replay.*;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -44,24 +46,27 @@ import java.util.Collections;
 
 import java.lang.InterruptedException;
 import java.lang.Thread;
+import org.jboss.netty.channel.Channels;
 
 
 enum COMMANDSTATE{
     INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
 }
 
-class CPP{
-    public CPP()
-    {}
-}
 
+class MessageDecoder extends ReplayingDecoder<VoidEnum>{
+    @Override
+    protected Object decode(ChannelHandlerContext ctx, Channel handler, ChannelBuffer buffer, VoidEnum state)
+    {
+        return buffer.readBytes(4);
+    }
+}
 
 
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
 //'one' means no longer accessed by other channels
 @ChannelPipelineCoverage("one")
 class ServerHandler extends SimpleChannelHandler{
-    
     private int sn = 0;
     
     private String clientaddr;
@@ -86,53 +91,27 @@ class ServerHandler extends SimpleChannelHandler{
     
     private Monitor monitor;
     
-    public ServerHandler(ChannelGroup channelgroup, Monitor monitor)
+    public ServerHandler(Monitor monitor)
     {
-        this.channelgroup = channelgroup;
         this.monitor = monitor;
         this.syncanswer.writeBytes("a".getBytes());
-    }
-    
-    public long getTransferredBytes()
-    {
-        return transferredBytes.get();
-    }
-    
-    
-    public ChannelBuffer getBuffer()
-    {
-        return buf;
-    }
-    
-    public boolean clearBuffer()
-    {
-        buf.clear();
-        return true;
     }
     
     @Override
     public void channelConnected(ChannelHandlerContext ctx, ChannelStateEvent e) throws Exception
     {
-        
         String host = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getAddress().getHostAddress();
         int iPort = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getPort();
-        clientaddr = host+':'+Integer.toString(iPort);
+        clientaddr = host + ':' + Integer.toString(iPort);
         
         channelgroup.add(ctx.getChannel());
-        
         channelstate = COMMANDSTATE.SYNCREAD;
-        
         logger.log(Level.INFO, "Connected from " + clientaddr + ", now #channelgroup: " + Integer.toString(channelgroup.size()));
     }
     
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)
     {
-        /*
-        transferredBytes.addAndGet(((ChannelBuffer) e.getMessage()).readableBytes());
-        e.getChannel().write(e.getMessage());
-        */
-        
         switch (monitor.command)
         {
             case INIT:
@@ -142,7 +121,7 @@ class ServerHandler extends SimpleChannelHandler{
                 e.getChannel().write(syncanswer);
                 buf.clear();
                 break;
-            case ALLREAD:                
+            case ALLREAD:
                 if (channelstate == COMMANDSTATE.WAITWRITE)
                 {   
                     break;
@@ -175,7 +154,6 @@ class ServerHandler extends SimpleChannelHandler{
                 channelstate = COMMANDSTATE.WAITREAD;
                 break;
         }
-
     }
     
     @Override
@@ -186,61 +164,48 @@ class ServerHandler extends SimpleChannelHandler{
     }
 }
 
+
 class ServerPipelineFactory implements ChannelPipelineFactory{
     private static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());    
-    private ChannelGroup channelgroup = null;
-    private Monitor monitor = null;
-    // private OrderedMemoryAwareThreadPoolExecutor pipelineExecutor = null;
-    private String answer = null;
-    private int max = 10;
+    private Monitor monitor;
+    private String answer;
     
-
-    
-    public ServerPipelineFactory(ChannelGroup channelgroup, Monitor monitor, 
-            String answer, int max)
+    public ServerPipelineFactory(Monitor monitor, String answer)
     {
         super();
-        this.channelgroup = channelgroup;
         this.monitor = monitor;
         this.answer = answer;
-        this.max = max;
-
     }
     
     public ChannelPipeline getPipeline() throws Exception
     {
-        if (max == 0 || channelgroup.size() >= max)
+        if (HCVEAsyncServer.iMaxNumOfConn == 0 || HCVEAsyncServer.channelgroup.size() >= HCVEAsyncServer.iMaxNumOfConn)
         {
-            throw new Exception("no connection allowed(maximum="+ max +").");
+            throw new Exception("no connection allowed(maximum="+ Integer.toString(HCVEAsyncServer.iMaxNumOfConn) +").");
         }
-        
+        /*
         ChannelPipeline pipeline = Channels.pipeline();
-        
         ServerHandler hdl = new ServerHandler(channelgroup, monitor);
         pipeline.addLast("handler", hdl);
-
         logger.log(Level.INFO, "New comming, now #channelgroup: " + Integer.toString(channelgroup.size())); 
         return pipeline;
+        */
+        return Channels.pipeline(new MessageDecoder(), new ServerHandler(monitor));
     }
 }
 
 
 class Monitor extends Thread
 {
-    public static int maxSN = 10*2;
+    static final int maxSN = 10*2;
     
     public COMMANDSTATE command = COMMANDSTATE.INIT;
     public List<ArrayList<ChannelBuffer>> messageSet = null;
     public int sn = 0;
     
-    private ChannelGroup channelgroup = null;
-
-    
-    public Monitor(ChannelGroup channelgroup)
+    public Monitor()
     {
-        this.channelgroup = channelgroup;
-        
-        messageSet = Collections.synchronizedList(new ArrayList<ArrayList<ChannelBuffer>>());        
+        messageSet = Collections.synchronizedList(new ArrayList<ArrayList<ChannelBuffer>>());
         for (int i=0;i<maxSN;i++)
         {
             messageSet.add(new ArrayList<ChannelBuffer>());
@@ -249,7 +214,7 @@ class Monitor extends Thread
     
     public boolean isARC()
     {
-        if (messageSet.get(sn).size() < channelgroup.size())
+        if (messageSet.get(sn).size() < HCVEAsyncServer.channelgroup.size())
         {
             return false;
         }
@@ -301,82 +266,56 @@ class Monitor extends Thread
  * @author demo
  */
 public class HCVEAsyncServer {
-
-    private final int iPort;
-    private final int iMaxNumOfConn;
+    //ChannelGroup constrcut requires name of the group as a parameter.
+    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName());    
+    static final int iPort = 7788;
+    static final int iMaxNumOfConn = 2;
     
-    public HCVEAsyncServer(int iPort, int iMaxNumOfConn)
-    {
-        this.iPort = iPort;
-        this.iMaxNumOfConn = iMaxNumOfConn;
-    }
+    public HCVEAsyncServer()
+    {}
     
     public void run()
     {
-        ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName());
-        
-        Monitor monitor = new Monitor(channelgroup);
-
+        // monitor
+        Monitor monitor = new Monitor();
         monitor.start();
         System.out.println("Monitor starts.");
         
+        // boostrap
         ServerBootstrap bootstrap = new ServerBootstrap(
             new NioServerSocketChannelFactory(
                 Executors.newCachedThreadPool(), Executors.newCachedThreadPool()
         ));
-        /* [Ping-pong version]
-         * new NioServerSocketChannelFactory(
-         *   Executors.newCachedThreadPool(), Executors.newCachedThreadPool(), 
-         *   Runtime.getRuntime().availableProcessors()*2+1)
-         */
-        
-        /*
-        OrderedMemonyAwareThreadPoolExecutor pipelineexecutor = 
-                new OrderedMemonyAwareThreadPoolExecutor(
-                    200, 1048576, 1073741824, 100, );
-        */ 
-        
-        
-        /*
-        bootstrap.setPipelineFactory(new ChannelPipelineFactory() {
-            public ChannelPipeline getPipeline() throws Exception {
-                return Channels.pipeline(new ServerHandler());
-            }
-        });
-        */ 
-        ServerPipelineFactory factory = new ServerPipelineFactory(
-                channelgroup, monitor, null, iMaxNumOfConn);
-        
-        bootstrap.setPipelineFactory(factory);
-        
+
+        //server factory
+        ServerPipelineFactory factory = new ServerPipelineFactory(monitor, null);
+
+        bootstrap.setPipelineFactory(factory);        
         bootstrap.setOption("child.tcpNoDelay", true);
         bootstrap.setOption("child.keepAlive", true);
         //bootstrap.setOption("reusedAddress", true);
         
         
-        bootstrap.bind(new InetSocketAddress(iPort));
-        System.out.println("port binds.");        
-        //Channel channel = bootstrap.bind(new InetSocketAddress(iPort));
-        //channelgroup.add(channel);
+        Channel serverChannel = bootstrap.bind(new InetSocketAddress(iPort));
+        channelgroup.add(serverChannel);
+        System.out.println("port binds.");
         channelgroup.close().awaitUninterruptibly();
-        System.out.println("server starts.");        
+        System.out.println("server starts.");   
     }
-    
+
     /**
      * @param args the command line arguments
      */
     public static void main(String[] args) {
         // TODO code application logic here
-        int iPort = 7788;
-        int iMaxNumConn = 2;
-        
-        boolean isParamized = false;
-        
-        if (isParamized) 
+      
+        /*
+        boolean isParamsAllowed = false;
+        if (isParamsAllowed) 
         {
             if (args.length == 2)
             {
-                iPort = Integer.parseInt(args[0]);
+                this.iPort = Integer.parseInt(args[0]);
                 iMaxNumConn = Integer.parseInt(args[1]);
             }
             else
@@ -385,8 +324,8 @@ public class HCVEAsyncServer {
                 return;
             }            
         }
-        
-        new HCVEAsyncServer(iPort, iMaxNumConn).run();
+        */
+        new HCVEAsyncServer().run();
     }
 }
 
