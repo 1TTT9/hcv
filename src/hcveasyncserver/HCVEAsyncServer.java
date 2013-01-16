@@ -55,14 +55,6 @@ class CPP{
     {}
 }
 
-class BBB{
-    private int key;
-    
-    public BBB(int key)
-    {
-        this.key = key;
-    }
-}
 
 
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
