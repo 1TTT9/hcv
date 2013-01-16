@@ -50,6 +50,10 @@ enum COMMANDSTATE{
     INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
 }
 
+class CPP{
+    public CPP()
+    {}
+}
 
 class AAA{
     private int key;
