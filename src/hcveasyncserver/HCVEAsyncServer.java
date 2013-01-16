@@ -51,6 +51,16 @@ enum COMMANDSTATE{
 }
 
 
+class AAA{
+    private int key;
+    
+    public AAA(int key)
+    {
+        this.key = key;
+    }
+}
+
+
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
 //'one' means no longer accessed by other channels
 @ChannelPipelineCoverage("one")
