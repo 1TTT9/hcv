@@ -36,6 +36,7 @@ import org.jboss.netty.channel.SimpleChannelHandler;
 
 import static org.jboss.netty.buffer.ChannelBuffers.*;
 import static org.jboss.netty.channel.Channels.*;
+import org.jboss.netty.channel.Channels;
 
 import org.jboss.netty.handler.codec.replay.*;
 
@@ -48,7 +49,8 @@ import java.util.Collections;
 
 import java.lang.InterruptedException;
 import java.lang.Thread;
-import org.jboss.netty.channel.Channels;
+import java.io.ByteArrayOutputStream;
+
 
 
 enum COMMANDSTATE{
@@ -59,23 +61,27 @@ enum COMMANDSTATE{
 class MessageDecoder extends ReplayingDecoder<VoidEnum>{
     private boolean readLength;
     private int length;
-    
+
     @Override
     protected Object decode(ChannelHandlerContext ctx, Channel handler, ChannelBuffer buffer, VoidEnum state)
     {
-        ChannelBuffer buf;
         if (!readLength){
             length = buffer.readInt();
             readLength = true;
+            /* checkpoint():
+             *   update the initial position of the buffer so that replayingDecoder can rewind the last
+             * readerIndex of the buffer to the last position where you called the checkpoint() method
+             */
             checkpoint();
         }
-        
+
         if (readLength){
-            buf = buffer.readBytes(length);
+            ChannelBuffer buf = buffer.readBytes(length);
             readLength = false;
             checkpoint();
+            return buf;
         }
-        return buf;
+        return null;
     }
 }
 
@@ -97,7 +103,14 @@ final class ChannelState{
             return 0;
         }
     };
-}
+    
+    
+    static final ChannelLocal<ByteArrayOutputStream> sb = new ChannelLocal<ByteArrayOutputStream>(){
+        protected ByteArrayOutputStream initialValue(Channel ch){
+            return new ByteArrayOutputStream();
+        }        
+    };
+}    
 
 
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
@@ -105,8 +118,6 @@ final class ChannelState{
 //@ChannelPipelineCoverage("one")  ### depreciated
 @Sharable
 class ServerHandler extends SimpleChannelHandler{
-    private final ChannelBuffer buf = dynamicBuffer();
-    
     final static ChannelBuffer syncanswer = buffer(1);
     
     private final int bufsize = 10;
@@ -139,16 +150,33 @@ class ServerHandler extends SimpleChannelHandler{
     }
     
     @Override
-    public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)
+    public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)  throws Exception
     {
+        ChannelBuffer buf = ((ChannelBuffer)e.getMessage());
+        
+        logger.log(Level.INFO, "(prev)message from client:" + ctx.getChannel().toString() + ":" + ChannelState.sb.get(ctx.getChannel()).toString());
+        
+        ChannelState.sb.get(ctx.getChannel()).write(buf.array());
+
+        
+        byte[] message = new byte[buf.readableBytes()];
+        
+        for (int i=0;i<message.length;i++)
+        {
+            message[i] = buf.readByte();
+        }
+        
+        //logger.log(Level.INFO, "(curr)message from client:" + ctx.getChannel().toString() + ":" + message.toString());
+        logger.log(Level.INFO, "(curr)message from client:" + ctx.getChannel().toString() + ":" + new String(message));        
+
+        
         switch (Monitor.command)
         {
             case INIT:
-                buf.writeBytes((ChannelBuffer)e.getMessage());
-                System.out.println(buf.toByteBuffer());
-                System.out.println( ctx.getChannel().toString() + " sent");
+                //buf.writeBytes((ChannelBuffer)e.getMessage());
+                //System.out.println(buf.toByteBuffer());
+                //System.out.println( ctx.getChannel().toString() + " sent");
                 e.getChannel().write(syncanswer);
-                buf.clear();
                 break;
             case ALLREAD:
                 if (ChannelState.command.get(ctx.getChannel()) == COMMANDSTATE.WAITWRITE)
@@ -325,12 +353,14 @@ public class HCVEAsyncServer {
         bootstrap.setOption("child.keepAlive", true);
         //bootstrap.setOption("reusedAddress", true);
         
-        
+        bootstrap.bind(new InetSocketAddress(iPort));
+       /* 
         Channel serverChannel = bootstrap.bind(new InetSocketAddress(iPort));
         channelgroup.add(serverChannel);
         System.out.println("port binds.");
         channelgroup.close().awaitUninterruptibly();
         System.out.println("server starts.");   
+        */
     }
 
     /**
