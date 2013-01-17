@@ -27,7 +27,9 @@ import java.util.logging.Level;
 import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.channel.ChannelStateEvent;
 import org.jboss.netty.channel.ChannelHandlerContext;
-import org.jboss.netty.channel.ChannelPipelineCoverage;
+//import org.jboss.netty.channel.ChannelPipelineCoverage;  ### depreciated on 3.6
+import org.jboss.netty.channel.ChannelHandler.Sharable;
+import org.jboss.netty.channel.ChannelLocal;
 import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.SimpleChannelHandler;
@@ -55,27 +57,57 @@ enum COMMANDSTATE{
 
 
 class MessageDecoder extends ReplayingDecoder<VoidEnum>{
+    private boolean readLength;
+    private int length;
+    
     @Override
     protected Object decode(ChannelHandlerContext ctx, Channel handler, ChannelBuffer buffer, VoidEnum state)
     {
-        return buffer.readBytes(4);
+        ChannelBuffer buf;
+        if (!readLength){
+            length = buffer.readInt();
+            readLength = true;
+            checkpoint();
+        }
+        
+        if (readLength){
+            buf = buffer.readBytes(length);
+            readLength = false;
+            checkpoint();
+        }
+        return buf;
     }
+}
+
+final class ChannelState{
+    static final ChannelLocal<Boolean> loginIn = new ChannelLocal<Boolean>(){
+        protected Boolean initialValue(Channel ch){
+            return false;
+        }
+    };
+    
+    static final ChannelLocal<COMMANDSTATE> command = new ChannelLocal<COMMANDSTATE>(){
+        protected COMMANDSTATE initialValue(Channel ch){
+            return COMMANDSTATE.INIT;
+        }
+    };
+    
+    static final ChannelLocal<Integer> sn = new ChannelLocal<Integer>(){
+        protected Integer initialValue(Channel ch){
+            return 0;
+        }
+    };
 }
 
 
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
 //'one' means no longer accessed by other channels
-@ChannelPipelineCoverage("one")
+//@ChannelPipelineCoverage("one")  ### depreciated
+@Sharable
 class ServerHandler extends SimpleChannelHandler{
-    private int sn = 0;
-    
-    private String clientaddr;
-    
-    private COMMANDSTATE channelstate = COMMANDSTATE.INIT;  //0:init, 1:WaitRead(WR) 2:ReadyRead(RR), 3:WaitWrite(WW)  4:ReadyWrite(RW)
-    
     private final ChannelBuffer buf = dynamicBuffer();
     
-    private ChannelBuffer syncanswer = buffer(1);
+    final static ChannelBuffer syncanswer = buffer(1);
     
     private final int bufsize = 10;
     
@@ -86,43 +118,40 @@ class ServerHandler extends SimpleChannelHandler{
     
     // bytes monitor
     private static final AtomicLong transferredBytes = new AtomicLong();
-        
-    private ChannelGroup channelgroup = null;
     
-    private Monitor monitor;
-    
-    public ServerHandler(Monitor monitor)
+    public ServerHandler()
     {
-        this.monitor = monitor;
-        this.syncanswer.writeBytes("a".getBytes());
+        syncanswer.writeBytes("a".getBytes());
     }
     
     @Override
     public void channelConnected(ChannelHandlerContext ctx, ChannelStateEvent e) throws Exception
     {
+        /*
         String host = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getAddress().getHostAddress();
         int iPort = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getPort();
         clientaddr = host + ':' + Integer.toString(iPort);
-        
-        channelgroup.add(ctx.getChannel());
-        channelstate = COMMANDSTATE.SYNCREAD;
-        logger.log(Level.INFO, "Connected from " + clientaddr + ", now #channelgroup: " + Integer.toString(channelgroup.size()));
+        */
+        ChannelState.loginIn.set(ctx.getChannel(), true);
+        HCVEAsyncServer.channelgroup.add(ctx.getChannel());
+        ChannelState.command.set(ctx.getChannel(), COMMANDSTATE.INIT);
+        logger.log(Level.INFO, "Connected from " + ctx.getChannel().toString() + ", now #channelgroup: " + Integer.toString(HCVEAsyncServer.channelgroup.size()));
     }
     
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)
     {
-        switch (monitor.command)
+        switch (Monitor.command)
         {
             case INIT:
                 buf.writeBytes((ChannelBuffer)e.getMessage());
                 System.out.println(buf.toByteBuffer());
-                System.out.println( clientaddr + " sent");
+                System.out.println( ctx.getChannel().toString() + " sent");
                 e.getChannel().write(syncanswer);
                 buf.clear();
                 break;
             case ALLREAD:
-                if (channelstate == COMMANDSTATE.WAITWRITE)
+                if (ChannelState.command.get(ctx.getChannel()) == COMMANDSTATE.WAITWRITE)
                 {   
                     break;
                 }
@@ -133,25 +162,26 @@ class ServerHandler extends SimpleChannelHandler{
                 }
                 else
                 {
-                    if (monitor.sn != sn)
-                    {
-                        System.out.println("Client " + clientaddr + " delays... SN="+ Integer.toString(sn) 
-                                + "current SN=" + Integer.toString(monitor.sn));
+                    int sn = ChannelState.sn.get(ctx.getChannel());
+                    if ( sn != Monitor.sn){
+                        System.out.println("Client " + ctx.getChannel().toString() + " delays... SN="+ Integer.toString(sn) 
+                                + "current SN=" + Integer.toString(Monitor.sn));
                     }
-                    monitor.messageSet.get(monitor.sn).add(buf);
-                    sn = (sn+1)%Monitor.maxSN;
-                    channelstate = COMMANDSTATE.WAITWRITE;
+                    
+                    //Monitor.messageSet.get(Monitor.sn).add(buf);
+                    ChannelState.sn.set(ctx.getChannel(), (sn+1)%Monitor.maxSN);
+                    ChannelState.command.set(ctx.getChannel(), COMMANDSTATE.WAITWRITE);
                 }
                 break;
             case ALLWRITE:
-                if (channelstate == COMMANDSTATE.WAITREAD)
+                if (ChannelState.command.get(ctx.getChannel())  == COMMANDSTATE.WAITREAD)
                 { 
                     break; 
                 }
                 
                 e.getChannel().write(buf);
                 buf.clear();
-                channelstate = COMMANDSTATE.WAITREAD;
+                ChannelState.command.set(ctx.getChannel(), COMMANDSTATE.WAITREAD);
                 break;
         }
     }
@@ -169,6 +199,8 @@ class ServerPipelineFactory implements ChannelPipelineFactory{
     private static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());    
     private Monitor monitor;
     private String answer;
+    
+    private static final ServerHandler SHARED = new ServerHandler();    
     
     public ServerPipelineFactory(Monitor monitor, String answer)
     {
@@ -190,7 +222,7 @@ class ServerPipelineFactory implements ChannelPipelineFactory{
         logger.log(Level.INFO, "New comming, now #channelgroup: " + Integer.toString(channelgroup.size())); 
         return pipeline;
         */
-        return Channels.pipeline(new MessageDecoder(), new ServerHandler(monitor));
+        return Channels.pipeline(new MessageDecoder(), SHARED);
     }
 }
 
@@ -198,23 +230,15 @@ class ServerPipelineFactory implements ChannelPipelineFactory{
 class Monitor extends Thread
 {
     static final int maxSN = 10*2;
-    
-    public COMMANDSTATE command = COMMANDSTATE.INIT;
-    public List<ArrayList<ChannelBuffer>> messageSet = null;
-    public int sn = 0;
+    static int sn = 0;
+    static COMMANDSTATE command = COMMANDSTATE.INIT;
     
     public Monitor()
-    {
-        messageSet = Collections.synchronizedList(new ArrayList<ArrayList<ChannelBuffer>>());
-        for (int i=0;i<maxSN;i++)
-        {
-            messageSet.add(new ArrayList<ChannelBuffer>());
-        }
-    }    
+    {}    
     
     public boolean isARC()
     {
-        if (messageSet.get(sn).size() < HCVEAsyncServer.channelgroup.size())
+        if (HCVEAsyncServer.messageSet.get(sn).size() < HCVEAsyncServer.channelgroup.size())
         {
             return false;
         }
@@ -240,9 +264,9 @@ class Monitor extends Thread
                         System.out.println("Ohh... Somebody delays...");
                     }
 
-                    synchronized(messageSet)
+                    synchronized(HCVEAsyncServer.messageSet)
                     {
-                        Iterator i = messageSet.get(sn).iterator();
+                        Iterator i = HCVEAsyncServer.messageSet.get(sn).iterator();
                         while (i.hasNext())
                         {
                             ChannelBuffer cb = (ChannelBuffer)i.next();
@@ -251,7 +275,7 @@ class Monitor extends Thread
                     };
                     command =  COMMANDSTATE.ALLWRITE;
                     sn = (sn+1)%maxSN;
-                    messageSet.get(Math.abs(sn-maxSN/2)).clear();
+                    HCVEAsyncServer.messageSet.get(Math.abs(sn-maxSN/2)).clear();
                 }
             }
             
@@ -270,12 +294,18 @@ public class HCVEAsyncServer {
     static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName());    
     static final int iPort = 7788;
     static final int iMaxNumOfConn = 2;
+    static List<ArrayList<ChannelBuffer>> messageSet;
     
     public HCVEAsyncServer()
     {}
     
     public void run()
     {
+        messageSet = Collections.synchronizedList(new ArrayList<ArrayList<ChannelBuffer>>());
+        for (int i=0;i<Monitor.maxSN;i++){
+            messageSet.add(new ArrayList<ChannelBuffer>());
+        };
+
         // monitor
         Monitor monitor = new Monitor();
         monitor.start();
