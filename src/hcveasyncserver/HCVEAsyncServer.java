@@ -54,6 +54,46 @@ enum COMMANDSTATE{
     OFF, INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
 }
 
+final class ChannelState{
+    static final ChannelLocal<Boolean> loginIn = new ChannelLocal<Boolean>(){
+        protected Boolean initialValue(Channel ch){
+            return false;
+        }
+    };
+    
+    static final ChannelLocal<COMMANDSTATE> command = new ChannelLocal<COMMANDSTATE>(){
+        protected COMMANDSTATE initialValue(Channel ch){
+            return COMMANDSTATE.OFF;
+        }
+    };
+    
+    static final ChannelLocal<Integer> sn = new ChannelLocal<Integer>(){
+        protected Integer initialValue(Channel ch){
+            return 0;
+        }
+    };
+    
+    /*
+    static final ChannelLocal<ByteArrayOutputStream> sb = new ChannelLocal<ByteArrayOutputStream>(){
+        protected ByteArrayOutputStream initialValue(Channel ch){
+            return new ByteArrayOutputStream();
+        }        
+    };
+    */
+    
+    static final ChannelLocal<ArrayList<ByteArrayOutputStream>> messageSet = new ChannelLocal<ArrayList<ByteArrayOutputStream>>(){
+        protected ArrayList<ByteArrayOutputStream> initialValue(Channel ch)
+        {
+            List<ByteArrayOutputStream> ms = new ArrayList<ByteArrayOutputStream>();
+            for (int i=0;i<Monitor.maxSN;i++){
+                ms.add(new ByteArrayOutputStream());
+            };
+            return (ArrayList<ByteArrayOutputStream>)ms;
+        }
+    };
+            
+}    
+
 
 class MessageDecoder extends ReplayingDecoder<VoidEnum>{
     private boolean readLength;
@@ -81,33 +121,6 @@ class MessageDecoder extends ReplayingDecoder<VoidEnum>{
         return null;
     }
 }
-
-final class ChannelState{
-    static final ChannelLocal<Boolean> loginIn = new ChannelLocal<Boolean>(){
-        protected Boolean initialValue(Channel ch){
-            return false;
-        }
-    };
-    
-    static final ChannelLocal<COMMANDSTATE> command = new ChannelLocal<COMMANDSTATE>(){
-        protected COMMANDSTATE initialValue(Channel ch){
-            return COMMANDSTATE.OFF;
-        }
-    };
-    
-    static final ChannelLocal<Integer> sn = new ChannelLocal<Integer>(){
-        protected Integer initialValue(Channel ch){
-            return 0;
-        }
-    };
-    
-    static final ChannelLocal<ByteArrayOutputStream> sb = new ChannelLocal<ByteArrayOutputStream>(){
-        protected ByteArrayOutputStream initialValue(Channel ch){
-            return new ByteArrayOutputStream();
-        }        
-    };
-}    
-
 
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
 //'one' means no longer accessed by other channels
@@ -137,11 +150,11 @@ class ServerHandler extends SimpleChannelHandler{
         int iPort = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getPort();
         clientaddr = host + ':' + Integer.toString(iPort);
         */
-        ChannelState.loginIn.set(ctx.getChannel(), true);
-        HCVEAsyncServer.channelgroup.add(ctx.getChannel());
-        ChannelState.command.set(ctx.getChannel(), COMMANDSTATE.INIT);
+        ChannelState.loginIn.set(e.getChannel(), true);
+        HCVEAsyncServer.channelgroup.add(e.getChannel());
+        ChannelState.command.set(e.getChannel(), COMMANDSTATE.INIT);
         logger.log(Level.INFO, "Connected from {0}, now #channelgroup: {1}", 
-                new Object[]{ctx.getChannel().toString(), HCVEAsyncServer.channelgroup.size()});
+                new Object[]{e.getChannel().toString(), HCVEAsyncServer.channelgroup.size()});
     }
     
     @Override
@@ -149,21 +162,25 @@ class ServerHandler extends SimpleChannelHandler{
     {
         /*
         logger.log(Level.INFO, "(prev)message-set from {0}: {1}",
-                new Object[]{ctx.getChannel(), ChannelState.sb.get(ctx.getChannel())});
+                new Object[]{e.getChannel(), ChannelState.sb.get(e.getChannel())});
         */
         
         //convert message into ChannelBuffer object
         ChannelBuffer buf = (ChannelBuffer)e.getMessage();
 
         //write-in message 
-        ChannelState.sb.get(e.getChannel()).write(buf.array());
-   
         
-        //ChannelState.sb.get(ctx.getChannel()).write(buf.readBytes(buf.readInt()).array());
+        int curSN = ChannelState.sn.get(e.getChannel());
+        
+        ChannelState.messageSet.get(e.getChannel()).get(curSN).flush();
+        ChannelState.messageSet.get(e.getChannel()).get(curSN).write(buf.array());
+        ChannelState.sn.set(e.getChannel(), (curSN+1)%Monitor.maxSN);
+        
+        //ChannelState.sb.get(e.getChannel()).write(buf.array());
         
         /*
         logger.log(Level.INFO, "(curr)message from {0}: {1}",
-                new Object[]{ctx.getChannel(), ChannelState.sb.get(ctx.getChannel())});
+                new Object[]{e.getChannel(), ChannelState.sb.get(e.getChannel()).toString()});
         */
         
         e.getChannel().write(syncanswer);
@@ -249,8 +266,7 @@ class ServerPipelineFactory implements ChannelPipelineFactory{
         logger.log(Level.INFO, "New comming, now #channelgroup: " + Integer.toString(channelgroup.size())); 
         return pipeline;
         */
-        //return Channels.pipeline(new MessageDecoder(), SHARED);
-        return Channels.pipeline(SHARED);
+        return Channels.pipeline(new MessageDecoder(), SHARED);
     }
 }
 
@@ -258,7 +274,8 @@ class ServerPipelineFactory implements ChannelPipelineFactory{
 class Monitor extends Thread
 {
     static final int maxSN = 10*2;
-    static int sn = 0;
+    
+    int sn = 0;
     static COMMANDSTATE command = COMMANDSTATE.INIT;
     
     public Monitor()
@@ -322,24 +339,28 @@ public class HCVEAsyncServer {
     static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName());    
     static final int iPort = 7788;
     static final int iMaxNumOfConn = 2;
-    static List<ArrayList<ChannelBuffer>> messageSet;
+    /* @depreciated usage:
+    *  static List<ArrayList<ChannelBuffer>> messageSet;
+    *  [2013-01-18] now move this data strcuture into ChannelLocal.
+    *   Monitor can access it by means of channelgroup while handlers access it through ChannelState.
+    */
     
     public HCVEAsyncServer()
     {}
     
     public void run()
     {
-        messageSet = Collections.synchronizedList(new ArrayList<ArrayList<ChannelBuffer>>());
-        for (int i=0;i<Monitor.maxSN;i++){
-            messageSet.add(new ArrayList<ChannelBuffer>());
-        };
-
         // monitor
         Monitor monitor = new Monitor();
         //monitor.start();
         System.out.println("Monitor starts.");
         
         // boostrap
+        /* NioServerSocketChannelFactory use boss threads and worker threads:
+            boss threads are used for coming connection while work threads are used for non-blocking read-and-write 
+            for associated channels.
+            Default number of worker threads in the pool are 2* the number of available processors.
+        */ 
         ServerBootstrap bootstrap = new ServerBootstrap(
             new NioServerSocketChannelFactory(
                 Executors.newCachedThreadPool(), Executors.newCachedThreadPool()
