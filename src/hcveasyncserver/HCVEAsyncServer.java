@@ -4,6 +4,16 @@
  */
 package hcveasyncserver;
 
+import java.util.Iterator;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+
+import java.lang.InterruptedException;
+import java.lang.Thread;
+import java.io.ByteArrayOutputStream;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.Executors;
@@ -40,21 +50,8 @@ import org.jboss.netty.channel.Channels;
 
 import org.jboss.netty.handler.codec.replay.*;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Collections;
-
-import java.lang.InterruptedException;
-import java.lang.Thread;
-import java.io.ByteArrayOutputStream;
-
-
-
 enum COMMANDSTATE{
-    INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
+    OFF, INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
 }
 
 
@@ -94,7 +91,7 @@ final class ChannelState{
     
     static final ChannelLocal<COMMANDSTATE> command = new ChannelLocal<COMMANDSTATE>(){
         protected COMMANDSTATE initialValue(Channel ch){
-            return COMMANDSTATE.INIT;
+            return COMMANDSTATE.OFF;
         }
     };
     
@@ -103,7 +100,6 @@ final class ChannelState{
             return 0;
         }
     };
-    
     
     static final ChannelLocal<ByteArrayOutputStream> sb = new ChannelLocal<ByteArrayOutputStream>(){
         protected ByteArrayOutputStream initialValue(Channel ch){
@@ -118,17 +114,15 @@ final class ChannelState{
 //@ChannelPipelineCoverage("one")  ### depreciated
 @Sharable
 class ServerHandler extends SimpleChannelHandler{
-    final static ChannelBuffer syncanswer = buffer(1);
-    
-    private final int bufsize = 10;
-    
     private static final Logger logger = Logger.getLogger(ServerHandler.class.getName());
     
+    final static ChannelBuffer syncanswer = buffer(1);
+        
     // is any message coming
-    private final AtomicInteger isAnyMessage = new AtomicInteger(0);
+    //private final AtomicInteger isAnyMessage = new AtomicInteger(0);
     
     // bytes monitor
-    private static final AtomicLong transferredBytes = new AtomicLong();
+    //private static final AtomicLong transferredBytes = new AtomicLong();
     
     public ServerHandler()
     {
@@ -138,7 +132,7 @@ class ServerHandler extends SimpleChannelHandler{
     @Override
     public void channelConnected(ChannelHandlerContext ctx, ChannelStateEvent e) throws Exception
     {
-        /*
+        /* [remote client's IP and port]
         String host = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getAddress().getHostAddress();
         int iPort = ((InetSocketAddress)ctx.getChannel().getRemoteAddress()).getPort();
         clientaddr = host + ':' + Integer.toString(iPort);
@@ -146,30 +140,34 @@ class ServerHandler extends SimpleChannelHandler{
         ChannelState.loginIn.set(ctx.getChannel(), true);
         HCVEAsyncServer.channelgroup.add(ctx.getChannel());
         ChannelState.command.set(ctx.getChannel(), COMMANDSTATE.INIT);
-        logger.log(Level.INFO, "Connected from " + ctx.getChannel().toString() + ", now #channelgroup: " + Integer.toString(HCVEAsyncServer.channelgroup.size()));
+        logger.log(Level.INFO, "Connected from {0}, now #channelgroup: {1}", 
+                new Object[]{ctx.getChannel().toString(), HCVEAsyncServer.channelgroup.size()});
     }
     
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)  throws Exception
     {
-        ChannelBuffer buf = ((ChannelBuffer)e.getMessage());
+        /*
+        logger.log(Level.INFO, "(prev)message-set from {0}: {1}",
+                new Object[]{ctx.getChannel(), ChannelState.sb.get(ctx.getChannel())});
+        */
         
-        logger.log(Level.INFO, "(prev)message from client:" + ctx.getChannel().toString() + ":" + ChannelState.sb.get(ctx.getChannel()).toString());
-        
-        ChannelState.sb.get(ctx.getChannel()).write(buf.array());
+        //convert message into ChannelBuffer object
+        ChannelBuffer buf = (ChannelBuffer)e.getMessage();
 
+        //write-in message 
+        //ChannelState.sb.get(ctx.getChannel()).write(buf.array());
+   
         
-        byte[] message = new byte[buf.readableBytes()];
+        //ChannelState.sb.get(ctx.getChannel()).write(buf.readBytes(buf.readInt()).array());
         
-        for (int i=0;i<message.length;i++)
-        {
-            message[i] = buf.readByte();
-        }
+        /*
+        logger.log(Level.INFO, "(curr)message from {0}: {1}",
+                new Object[]{ctx.getChannel(), ChannelState.sb.get(ctx.getChannel())});
+        */
         
-        //logger.log(Level.INFO, "(curr)message from client:" + ctx.getChannel().toString() + ":" + message.toString());
-        logger.log(Level.INFO, "(curr)message from client:" + ctx.getChannel().toString() + ":" + new String(message));        
-
-        
+        e.getChannel().write(syncanswer);
+        /*
         switch (Monitor.command)
         {
             case INIT:
@@ -184,7 +182,7 @@ class ServerHandler extends SimpleChannelHandler{
                     break;
                 }
                 
-                if (buf.readableBytes() < bufsize) 
+                if (buf.readableBytes() < 12) 
                 {
                     buf.writeBytes((ChannelBuffer)e.getMessage());
                 }
@@ -212,6 +210,7 @@ class ServerHandler extends SimpleChannelHandler{
                 ChannelState.command.set(ctx.getChannel(), COMMANDSTATE.WAITREAD);
                 break;
         }
+        */
     }
     
     @Override
@@ -250,7 +249,8 @@ class ServerPipelineFactory implements ChannelPipelineFactory{
         logger.log(Level.INFO, "New comming, now #channelgroup: " + Integer.toString(channelgroup.size())); 
         return pipeline;
         */
-        return Channels.pipeline(new MessageDecoder(), SHARED);
+        //return Channels.pipeline(new MessageDecoder(), SHARED);
+        return Channels.pipeline(SHARED);
     }
 }
 
@@ -336,7 +336,7 @@ public class HCVEAsyncServer {
 
         // monitor
         Monitor monitor = new Monitor();
-        monitor.start();
+        //monitor.start();
         System.out.println("Monitor starts.");
         
         // boostrap
