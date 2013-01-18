@@ -156,7 +156,7 @@ class ServerHandler extends SimpleChannelHandler{
         ChannelBuffer buf = (ChannelBuffer)e.getMessage();
 
         //write-in message 
-        //ChannelState.sb.get(ctx.getChannel()).write(buf.array());
+        ChannelState.sb.get(e.getChannel()).write(buf.array());
    
         
         //ChannelState.sb.get(ctx.getChannel()).write(buf.readBytes(buf.readInt()).array());
