@@ -314,8 +314,7 @@ class Monitor extends Thread {
                     
                     if (!isARC()) 
                     {
-                        logger.log(Level.INFO, "Ohh... Somebody delays...");                        
-                        System.out.println("Ohh... Somebody delays...");
+                        logger.log(Level.INFO, "Ohh... Somebody delays...");                     
                         continue;
                     }
                     
