@@ -5,11 +5,8 @@
 package hcveasyncserver;
 
 import java.util.Iterator;
-import java.util.Map;
-import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
-import java.util.Collections;
 
 import java.lang.InterruptedException;
 import java.lang.Thread;
@@ -29,12 +26,6 @@ import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.group.ChannelGroup;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
-import org.jboss.netty.handler.execution.OrderedMemoryAwareThreadPoolExecutor;
-
-
-//USED FOR HANDLER
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 import org.jboss.netty.buffer.ChannelBuffer;
@@ -44,17 +35,20 @@ import org.jboss.netty.channel.ChannelHandlerContext;
 import org.jboss.netty.channel.ChannelHandler.Sharable;
 import org.jboss.netty.channel.ChannelLocal;
 import org.jboss.netty.channel.MessageEvent;
-import org.jboss.netty.channel.WriteCompletionEvent;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.SimpleChannelHandler;
 
 import static org.jboss.netty.buffer.ChannelBuffers.*;
-import static org.jboss.netty.channel.Channels.*;
 import org.jboss.netty.channel.Channels;
 
 import org.jboss.netty.handler.codec.replay.*;
 
 import java.text.DecimalFormat;
+import org.jboss.netty.channel.ChannelEvent;
+import org.jboss.netty.channel.ChannelFuture;
+import org.jboss.netty.channel.ChannelFutureListener;
+import org.jboss.netty.channel.group.ChannelGroupFuture;
+import org.jboss.netty.channel.group.DefaultChannelGroupFuture;
 
 enum COMMANDSTATE {
 
@@ -155,6 +149,12 @@ class ServerHandler extends SimpleChannelHandler {
     }
 
     @Override
+    public void handleDownstream(ChannelHandlerContext ctx, ChannelEvent e) throws Exception {
+        logger.log(Level.INFO, "I am called... {0}", new Object[]{Thread.currentThread().getName()});        
+        super.handleDownstream(ctx, e);
+    }
+    
+    @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
         /*
          logger.log(Level.INFO, "(prev)message-set from {0}: {1}",
@@ -172,15 +172,18 @@ class ServerHandler extends SimpleChannelHandler {
 
         ByteBuffer bb = ByteBuffer.wrap(buf.array());
         DecimalFormat df = new DecimalFormat("+###.##;-###.##");
-        logger.log(Level.INFO, "(curr)message#{0} from {1}: ({2}, {3})",
-                new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat())});
-        bb.flip();
+        logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
+                new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat()),
+                Thread.currentThread().getName()});
+        bb.flip();        
         
+        /*
         ChannelBuffer cb = buffer(4);
         cb.writeFloat(3.14f);
         //logger.log(Level.INFO, "message sent: {0})", new Object[]{cb});
         e.getChannel().write(cb);
-
+        */
+        
         /*
          switch (Monitor.command)
          {
@@ -300,7 +303,6 @@ class Monitor extends Thread {
     @Override
     public void run() {
         try {
-
             sn = (sn + 1) % maxSN;
             boolean readyMonitored = true;
             for (;;) {
@@ -314,7 +316,7 @@ class Monitor extends Thread {
                     
                     if (!isARC()) 
                     {
-                        logger.log(Level.INFO, "Ohh... Somebody delays...");                     
+                        //logger.log(Level.INFO, "Ohh... Somebody delays...");                     
                         continue;
                     }
                     
@@ -322,7 +324,14 @@ class Monitor extends Thread {
                     Iterator i = HCVEAsyncServer.channelgroup.iterator();
                     while (i.hasNext()) {
                         ch = (Channel) i.next();
-                        logger.log(Level.INFO, "recevice sn:{0} from {1}", new Object[]{ ChannelState.sn.get(ch),ch });
+                        logger.log(Level.INFO, " from {0}, {1}-{2} --- {3}", new Object[]{ch, ChannelState.sn.get(ch), 
+                            sn, Thread.currentThread().getName()});
+                        
+                        //ChannelBuffer cb = buffer(4);
+                        //cb.writeFloat(3.14f);
+                        //logger.log(Level.INFO, "message sent: {0})", new Object[]{cb});
+                        //ch.write(cb);
+                        logger.log(Level.INFO, "from {0}, {1}-{2}", new Object[]{ch, ChannelState.sn.get(ch), sn });
                         //System.out.println("Receive data ... " + cb);
                     }
                     sn = (sn + 1) % maxSN;
@@ -340,8 +349,8 @@ class Monitor extends Thread {
  */
 public class HCVEAsyncServer {
     //ChannelGroup constrcut requires name of the group as a parameter.
-
-    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName());
+    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));    
+    
     static final int iPort = 7788;
     static final int iMaxNumOfConn = 2;
     /* @depreciated usage:
@@ -350,8 +359,8 @@ public class HCVEAsyncServer {
      *   Monitor can access it by means of channelgroup while handlers access it through ChannelState.
      */
 
-    public HCVEAsyncServer() {
-    }
+    public HCVEAsyncServer() 
+    {}
 
     public void run() {
         // monitor
@@ -378,6 +387,7 @@ public class HCVEAsyncServer {
         //bootstrap.setOption("reusedAddress", true);
 
         bootstrap.bind(new InetSocketAddress(iPort));
+        
         /* 
          Channel serverChannel = bootstrap.bind(new InetSocketAddress(iPort));
          channelgroup.add(serverChannel);
