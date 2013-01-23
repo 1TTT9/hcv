@@ -39,16 +39,12 @@ import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.SimpleChannelHandler;
 
 import static org.jboss.netty.buffer.ChannelBuffers.*;
-import org.jboss.netty.channel.Channels;
+import static org.jboss.netty.channel.Channels.*;
 
 import org.jboss.netty.handler.codec.replay.*;
 
 import java.text.DecimalFormat;
 import org.jboss.netty.channel.ChannelEvent;
-import org.jboss.netty.channel.ChannelFuture;
-import org.jboss.netty.channel.ChannelFutureListener;
-import org.jboss.netty.channel.group.ChannelGroupFuture;
-import org.jboss.netty.channel.group.DefaultChannelGroupFuture;
 
 enum COMMANDSTATE {
 
@@ -90,6 +86,18 @@ final class ChannelState {
     };
 }
 
+class MyData{
+    private float data = 3.14f;
+    
+    public MyData(){
+    }
+    
+    public float getData(){
+        return data;
+    }
+}
+
+
 class MessageDecoder extends ReplayingDecoder<VoidEnum> {
 
     private boolean readLength;
@@ -117,6 +125,16 @@ class MessageDecoder extends ReplayingDecoder<VoidEnum> {
     }
 }
 
+@Sharable
+class ServerHandlerTwo extends SimpleChannelHandler {
+    
+    @Override
+    public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
+        System.out.println("I am testing...");
+    }    
+    
+}
+
 //ChannelPipelineCoverage is used to acclaim its availablity for other channels or channelpipelines
 //'one' means no longer accessed by other channels
 //@ChannelPipelineCoverage("one")  ### depreciated
@@ -124,14 +142,12 @@ class MessageDecoder extends ReplayingDecoder<VoidEnum> {
 class ServerHandler extends SimpleChannelHandler {
 
     private static final Logger logger = Logger.getLogger(ServerHandler.class.getName());
-    final static ChannelBuffer syncanswer = buffer(1);
     // is any message coming
     //private final AtomicInteger isAnyMessage = new AtomicInteger(0);
     // bytes monitor
     //private static final AtomicLong transferredBytes = new AtomicLong();
 
     public ServerHandler() {
-        syncanswer.writeBytes("a".getBytes());
     }
 
     @Override
@@ -146,44 +162,51 @@ class ServerHandler extends SimpleChannelHandler {
         ChannelState.command.set(e.getChannel(), COMMANDSTATE.INIT);
         logger.log(Level.INFO, "Connected from {0}, now #channelgroup: {1}",
                 new Object[]{e.getChannel().toString(), HCVEAsyncServer.channelgroup.size()});
+        ChannelState.command.set(e.getChannel(), COMMANDSTATE.WAITREAD);
     }
 
     @Override
-    public void handleDownstream(ChannelHandlerContext ctx, ChannelEvent e) throws Exception {
-        logger.log(Level.INFO, "I am called... {0}", new Object[]{Thread.currentThread().getName()});        
-        super.handleDownstream(ctx, e);
+    public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {        
+        if (e.getMessage() instanceof Float)
+        {
+            ChannelBuffer cb = buffer(4);
+            cb.writeFloat((float)e.getMessage());
+            write(ctx, e.getFuture(), cb);
+           logger.log(Level.INFO, "write float({0}) --- {1}",
+                new Object[]{ e.getMessage(), Thread.currentThread().getName()});            
+        }else
+        {
+            super.writeRequested(ctx, e);
+        }
     }
     
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
-        /*
-         logger.log(Level.INFO, "(prev)message-set from {0}: {1}",
-         new Object[]{e.getChannel(), ChannelState.sb.get(e.getChannel())});
-         */
-
-        //convert message into ChannelBuffer object
         ChannelBuffer buf = (ChannelBuffer) e.getMessage();
 
         //write-in message 
         int curSN = ChannelState.sn.get(e.getChannel());
         ChannelState.messageSet.get(e.getChannel()).get(curSN).flush();
         ChannelState.messageSet.get(e.getChannel()).get(curSN).write(buf.array());
-        ChannelState.sn.set(e.getChannel(), (curSN+1)%Monitor.maxSN);
+        ChannelState.sn.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
 
         ByteBuffer bb = ByteBuffer.wrap(buf.array());
         DecimalFormat df = new DecimalFormat("+###.##;-###.##");
         logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
                 new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat()),
-                Thread.currentThread().getName()});
-        bb.flip();        
+                    Thread.currentThread().getName()});
+        bb.flip();
+        
+        //MyData md = new MyData();
+        //ctx.sendDownstream((MessageEvent)md);
         
         /*
-        ChannelBuffer cb = buffer(4);
-        cb.writeFloat(3.14f);
-        //logger.log(Level.INFO, "message sent: {0})", new Object[]{cb});
-        e.getChannel().write(cb);
-        */
-        
+         ChannelBuffer cb = buffer(4);
+         cb.writeFloat(3.14f);
+         //logger.log(Level.INFO, "message sent: {0})", new Object[]{cb});
+         e.getChannel().write(cb);
+         */
+
         /*
          switch (Monitor.command)
          {
@@ -252,16 +275,12 @@ class ServerHandler extends SimpleChannelHandler {
 }
 
 class ServerPipelineFactory implements ChannelPipelineFactory {
-
     private static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
-    private Monitor monitor;
-    private String answer;
     private static final ServerHandler SHARED = new ServerHandler();
+    private static final ServerHandlerTwo SHAREDTWO = new ServerHandlerTwo();    
 
-    public ServerPipelineFactory(Monitor monitor, String answer) {
+    public ServerPipelineFactory() {
         super();
-        this.monitor = monitor;
-        this.answer = answer;
     }
 
     public ChannelPipeline getPipeline() throws Exception {
@@ -275,11 +294,12 @@ class ServerPipelineFactory implements ChannelPipelineFactory {
          logger.log(Level.INFO, "New comming, now #channelgroup: " + Integer.toString(channelgroup.size())); 
          return pipeline;
          */
-        return Channels.pipeline(new MessageDecoder(), SHARED);
+        return pipeline(new MessageDecoder(), SHARED);
     }
 }
 
 class Monitor extends Thread {
+
     private static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
     static final int maxSN = 10 * 2;
     int sn = 0;
@@ -288,7 +308,7 @@ class Monitor extends Thread {
     public Monitor() {
     }
 
-    public boolean isARC() {
+    public boolean isARC(){
         Channel ch;
         Iterator i = HCVEAsyncServer.channelgroup.iterator();
         while (i.hasNext()) {
@@ -299,6 +319,16 @@ class Monitor extends Thread {
         }
         return true;
     }
+    
+    public void writeBack(){
+        Channel ch;
+        Iterator i = HCVEAsyncServer.channelgroup.iterator();
+        while (i.hasNext()) {
+            ch = (Channel) i.next();
+            ch.write(3.14f);
+        }
+    }
+    
 
     @Override
     public void run() {
@@ -306,34 +336,21 @@ class Monitor extends Thread {
             sn = (sn + 1) % maxSN;
             boolean readyMonitored = true;
             for (;;) {
-//                Thread.sleep(1500);
-//                System.out.println("monitoring...");
                 if (readyMonitored) {
                     command = COMMANDSTATE.ALLREAD;
                     Thread.sleep(1500);
-                    
-                    if (HCVEAsyncServer.channelgroup.isEmpty()) { continue; }                    
-                    
-                    if (!isARC()) 
-                    {
+
+                    if (HCVEAsyncServer.channelgroup.isEmpty()) {
+                        continue;
+                    }
+
+                    if (!isARC()) {
                         //logger.log(Level.INFO, "Ohh... Somebody delays...");                     
                         continue;
                     }
-                    
-                    Channel ch;
-                    Iterator i = HCVEAsyncServer.channelgroup.iterator();
-                    while (i.hasNext()) {
-                        ch = (Channel) i.next();
-                        logger.log(Level.INFO, " from {0}, {1}-{2} --- {3}", new Object[]{ch, ChannelState.sn.get(ch), 
-                            sn, Thread.currentThread().getName()});
-                        
-                        //ChannelBuffer cb = buffer(4);
-                        //cb.writeFloat(3.14f);
-                        //logger.log(Level.INFO, "message sent: {0})", new Object[]{cb});
-                        //ch.write(cb);
-                        logger.log(Level.INFO, "from {0}, {1}-{2}", new Object[]{ch, ChannelState.sn.get(ch), sn });
-                        //System.out.println("Receive data ... " + cb);
-                    }
+
+                    command = COMMANDSTATE.ALLWRITE;
+                    writeBack();                    
                     sn = (sn + 1) % maxSN;
                 }
             }
@@ -349,25 +366,30 @@ class Monitor extends Thread {
  */
 public class HCVEAsyncServer {
     //ChannelGroup constrcut requires name of the group as a parameter.
-    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));    
-    
+
+    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));
     static final int iPort = 7788;
-    static final int iMaxNumOfConn = 2;
+    static final int iMaxNumOfConn = 2;    
+    static final boolean isMonitorUp = true;
+    
     /* @depreciated usage:
      *  static List<ArrayList<ChannelBuffer>> messageSet;
      *  [2013-01-18] now move this data strcuture into ChannelLocal.
      *   Monitor can access it by means of channelgroup while handlers access it through ChannelState.
      */
 
-    public HCVEAsyncServer() 
-    {}
+    public HCVEAsyncServer() {
+    }
 
     public void run() {
         // monitor
-        Monitor monitor = new Monitor();
-        monitor.start();
-        System.out.println("Monitor starts.");
-
+        if (isMonitorUp)
+        {
+            Monitor monitor = new Monitor();
+            monitor.start();
+            System.out.println("Monitor starts.");
+        }
+        
         // boostrap
         /* NioServerSocketChannelFactory use boss threads and worker threads:
          boss threads are used for coming connection while work threads are used for non-blocking read-and-write 
@@ -379,7 +401,7 @@ public class HCVEAsyncServer {
                 Executors.newCachedThreadPool(), Executors.newCachedThreadPool()));
 
         //server factory
-        ServerPipelineFactory factory = new ServerPipelineFactory(monitor, null);
+        ServerPipelineFactory factory = new ServerPipelineFactory();
 
         bootstrap.setPipelineFactory(factory);
         bootstrap.setOption("child.tcpNoDelay", true);
@@ -387,7 +409,7 @@ public class HCVEAsyncServer {
         //bootstrap.setOption("reusedAddress", true);
 
         bootstrap.bind(new InetSocketAddress(iPort));
-        
+
         /* 
          Channel serverChannel = bootstrap.bind(new InetSocketAddress(iPort));
          channelgroup.add(serverChannel);
