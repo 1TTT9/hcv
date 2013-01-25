@@ -38,6 +38,7 @@ import org.jboss.netty.channel.group.ChannelGroup;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 import org.jboss.netty.handler.codec.replay.*;
+import org.jboss.netty.handler.timeout.WriteTimeoutHandler;
 
 enum WRITETYPE {
 
@@ -231,7 +232,7 @@ class HCVDataEncoder extends SimpleChannelHandler {
     private static final Logger logger = HCVEAsyncServer.logger;
     private static DecimalFormat df = HCVEAsyncServer.df;
     
-    private ChannelBuffer getChannelBuffer(WRITETYPE wt) {
+    public static ChannelBuffer getChannelBuffer(WRITETYPE wt) {
         int cbSize = 1;
         switch (wt) {
             case INIT:
@@ -244,59 +245,45 @@ class HCVDataEncoder extends SimpleChannelHandler {
             case ADJUST:
                 cbSize = 5;
                 break;
+            default:
+                break;
         }
         return buffer(cbSize);
-    }
-    
-    private void encode(SendSPData sdata, ChannelBuffer cb) {
-        Map wdata = (HashMap)sdata.getData();
-        
-        switch (sdata.getContentType()) {
-            case SYNC:
-                cb.writeByte('1');
-                break;
-            case WAIT:
-                cb.writeByte('2');
-                break;
-            case READY:
-                cb.writeByte('3');
-                cb.writeFloat((float) wdata.get('x'));
-                cb.writeFloat((float) wdata.get('y'));
-                cb.writeFloat((float) wdata.get('h'));
-                cb.writeFloat((float) wdata.get('v'));
-                break;
-            case ADJUST:
-                cb.writeByte((byte)'4');
-                cb.writeFloat(3.14f);
-                break;
-            default:
-                System.out.println("This should not happen");
-                break;
-        }
     }
     
     @Override
     public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
         
-        if (e.getMessage() instanceof RecvSPData) {
-            logger.log(Level.INFO, "I am here... recvSPDATA correct");
+        if (e.getMessage() instanceof SendSPData) {
+            logger.log(Level.INFO, "transform SendSPData into ChannelBuffer");
             
-            SendSPData sdata = new SendSPData();
-            int curSN = ChannelState.writeSN.get(e.getChannel());
-
-            if (Monitor.command == COMMANDSTATE.INIT) {
-                sdata.setSyncData();
-            } else {
-                if (ChannelState.writeTS.get(e.getChannel()).get(curSN).getTime() < Monitor.writeTS.get(curSN).getTime()) {
-                    sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
-                } else {
-                    sdata.setWaitData();
-                }
-            }
-            
+            SendSPData sdata = (SendSPData)e.getMessage();                        
             ChannelBuffer cb = this.getChannelBuffer(sdata.getContentType());
-            this.encode(sdata, cb);
+            Map wdata = sdata.getData();
             
+            if (sdata.getContentType() == WRITETYPE.SYNC) {
+                cb.writeByte('1');
+            } else if (sdata.getContentType() == WRITETYPE.WAIT) {
+                cb.writeByte('2');
+            } else if (sdata.getContentType() == WRITETYPE.ADJUST) {
+                cb.writeByte((byte) '4');
+                cb.writeFloat(3.14f);
+            } else if (sdata.getContentType() == WRITETYPE.WAIT) {
+                cb.writeByte('3');
+                cb.writeFloat((float) wdata.get('x'));
+                cb.writeFloat((float) wdata.get('y'));
+                cb.writeFloat((float) wdata.get('h'));
+                cb.writeFloat((float) wdata.get('v'));
+
+                int curSN = ChannelState.writeSN.get(e.getChannel());
+                ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
+                ChannelState.writeSN.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
+                logger.log(Level.INFO, "Channel {0}: send message#{1} --- {2}",
+                        new Object[]{e.getChannel(), curSN, Thread.currentThread().getName()});
+            } else {
+                cb.writeByte(128);                
+                logger.log(Level.SEVERE, "No content type found. This line should not happen");
+            }
             write(ctx, e.getFuture(), cb);
         } else if (e.getMessage() instanceof Float) {
             ChannelBuffer cb = buffer(4);
@@ -306,36 +293,43 @@ class HCVDataEncoder extends SimpleChannelHandler {
             write(ctx, e.getFuture(), cb);
         } else {
             logger.log(Level.INFO, "I am here... not any type");        
-            //ctx.sendDownstream(e);
-            write(ctx, e.getFuture(), e.getMessage());
             super.writeRequested(ctx, e);
         }
     }
 }
 
-/*
-class WritemessageHandler extends SimpleChannelHandler {
+
+class MessageEncoder extends SimpleChannelHandler {
 
     private static final Logger logger = HCVEAsyncServer.logger;
     private static DecimalFormat df = HCVEAsyncServer.df;
     
     @Override
     public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
+        
         if (e.getMessage() instanceof RecvSPData) {
-            logger.log(Level.INFO, "I am here");
             SendSPData sdata = new SendSPData();
             int curSN = ChannelState.writeSN.get(e.getChannel());
 
             if (Monitor.command == COMMANDSTATE.INIT) {
                 sdata.setSyncData();
+                logger.log(Level.INFO, "Channel {0}: SYNC --- {1}",
+                        new Object[]{e.getChannel(), Thread.currentThread().getName()});              
             } else {
                 if (ChannelState.writeTS.get(e.getChannel()).get(curSN).getTime() < Monitor.writeTS.get(curSN).getTime()) {
                     sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
+                
+                    Map wdata = sdata.getData();
+                    logger.log(Level.INFO, "Channel {0}: READY #{1}[ X({2}),Y({3}),H({4}),V({5})]--- {6}",
+                            new Object[]{e.getChannel(), curSN, df.format(wdata.get('x')), df.format(wdata.get('y')),
+                                df.format(wdata.get('h')), df.format(wdata.get('v')),
+                                Thread.currentThread().getName()});
                 } else {
                     sdata.setWaitData();
+                    logger.log(Level.INFO, "Channel {0}: WAIT --- {1}",
+                            new Object[]{e.getChannel(), Thread.currentThread().getName()});
                 }
             }
-            //e.getChannel().write(sdata);
             write(ctx, e.getFuture(), sdata);
         } else {
            logger.log(Level.INFO, "I am here... not recvspdata");
@@ -343,7 +337,7 @@ class WritemessageHandler extends SimpleChannelHandler {
         }
     }
 }
-*/
+
 
 @Sharable
 class ServerHandler extends SimpleChannelHandler {
@@ -356,7 +350,7 @@ class ServerHandler extends SimpleChannelHandler {
         ChannelState.loginIn.set(e.getChannel(), true);
         HCVEAsyncServer.channelgroup.add(e.getChannel());
         ChannelState.command.set(e.getChannel(), COMMANDSTATE.INIT);
-        logger.log(Level.INFO, "Connected from {0}, now #channelgroup: {1}",
+        logger.log(Level.INFO, "Channel {0}, now #channelgroup: {1}",
                 new Object[]{e.getChannel().toString(), HCVEAsyncServer.channelgroup.size()});
         ChannelState.command.set(e.getChannel(), COMMANDSTATE.WAITREAD);
     }
@@ -389,11 +383,14 @@ class ServerHandler extends SimpleChannelHandler {
             ChannelState.messageSet.get(e.getChannel()).get(curSN).write(buf.array());
             ChannelState.sn.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
 
+            /*
             ByteBuffer bb = ByteBuffer.wrap(buf.array());
-            DecimalFormat df = new DecimalFormat("+###.##;-###.##");
             logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
                     new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat()), Thread.currentThread().getName()});
             bb.flip();
+            */
+            logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
+                    new Object[]{curSN + 1, e.getChannel(), df.format(buf.readFloat()), df.format(buf.readFloat()), Thread.currentThread().getName()});            
            e.getChannel().write(e.getMessage());            
         }        
     }
@@ -435,7 +432,7 @@ class ServerPipelineFactory implements ChannelPipelineFactory {
 
         return pipeline(new MessageDecoder(), new HCVDataDecoder(), 
                 SHARED, 
-                new HCVDataEncoder());
+                new HCVDataEncoder(), new MessageEncoder());
     }
 }
 
