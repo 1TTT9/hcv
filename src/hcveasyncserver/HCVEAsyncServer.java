@@ -40,10 +40,14 @@ import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 import org.jboss.netty.handler.codec.replay.*;
 
 enum WRITETYPE {
-    INIT, SYNC, WAIT, READY, ADJUST,}
+
+    INIT, SYNC, WAIT, READY, ADJUST,
+}
 
 enum COMMANDSTATE {
-    OFF, INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,}
+
+    OFF, INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
+}
 
 final class ChannelState {
 
@@ -69,7 +73,8 @@ final class ChannelState {
         @Override
         protected List<Timestamp> initialValue(Channel ch) {
             List<Timestamp> ms = new ArrayList<>();
-            Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+            //Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+            Timestamp ts = new Timestamp(0L);
             for (int i = 0; i < Monitor.maxSN; i++) {
                 ms.add(ts);
             };
@@ -132,7 +137,7 @@ class SendSPData {
      * (4) pos   : server now sends a just-finished new position and feedback
      * (5) adj   : server suggests you to adjust your fps
      */
-    private final Map mdata;
+    private Map mdata;
 
     public SendSPData() {
         this.wt = WRITETYPE.INIT;
@@ -221,59 +226,130 @@ class HCVDataDecoder extends ReplayingDecoder<VoidEnum> {
     }
 }
 
-
 class HCVDataEncoder extends SimpleChannelHandler {
 
     private static final Logger logger = HCVEAsyncServer.logger;
-
+    private static DecimalFormat df = HCVEAsyncServer.df;
+    
+    private ChannelBuffer getChannelBuffer(WRITETYPE wt) {
+        int cbSize = 1;
+        switch (wt) {
+            case INIT:
+            case SYNC:
+            case WAIT:
+                break;
+            case READY:
+                cbSize = 17;
+                break;
+            case ADJUST:
+                cbSize = 5;
+                break;
+        }
+        return buffer(cbSize);
+    }
+    
+    private void encode(SendSPData sdata, ChannelBuffer cb) {
+        Map wdata = (HashMap)sdata.getData();
+        
+        switch (sdata.getContentType()) {
+            case SYNC:
+                cb.writeByte('1');
+                break;
+            case WAIT:
+                cb.writeByte('2');
+                break;
+            case READY:
+                cb.writeByte('3');
+                cb.writeFloat((float) wdata.get('x'));
+                cb.writeFloat((float) wdata.get('y'));
+                cb.writeFloat((float) wdata.get('h'));
+                cb.writeFloat((float) wdata.get('v'));
+                break;
+            case ADJUST:
+                cb.writeByte((byte)'4');
+                cb.writeFloat(3.14f);
+                break;
+            default:
+                System.out.println("This should not happen");
+                break;
+        }
+    }
+    
     @Override
     public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
-        if (e.getMessage() instanceof SendSPData) {
+        
+        if (e.getMessage() instanceof RecvSPData) {
+            logger.log(Level.INFO, "I am here... recvSPDATA correct");
             
-            ChannelBuffer cb = dynamicBuffer(1);
-            
-            WRITETYPE ct = ((SendSPData) e.getMessage()).getContentType();
-            Map wdata = ((SendSPData) e.getMessage()).getData();
-            
-            switch (ct)
-            {
-                case INIT:
-                   cb.writeByte('1');
-                   break;
-                case WAIT:
-                    cb.writeByte('2');
-                    break;
-                case READY:
-                    cb.writeByte('3');                    
-                    cb.writeFloat((float)wdata.get('x'));
-                    cb.writeFloat((float)wdata.get('y'));
-                    cb.writeFloat((float)wdata.get('h'));
-                    cb.writeFloat((float)wdata.get('v'));
-                    break;
-                case ADJUST:
-                    cb.writeByte('4');                    
-                    cb.writeFloat(3.14f);
-                    break;
-            }
-            write(e.getChannel(), cb);
-        }
+            SendSPData sdata = new SendSPData();
+            int curSN = ChannelState.writeSN.get(e.getChannel());
 
-        if (e.getMessage() instanceof Float) {
+            if (Monitor.command == COMMANDSTATE.INIT) {
+                sdata.setSyncData();
+            } else {
+                if (ChannelState.writeTS.get(e.getChannel()).get(curSN).getTime() < Monitor.writeTS.get(curSN).getTime()) {
+                    sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
+                } else {
+                    sdata.setWaitData();
+                }
+            }
+            
+            ChannelBuffer cb = this.getChannelBuffer(sdata.getContentType());
+            this.encode(sdata, cb);
+            
+            write(ctx, e.getFuture(), cb);
+        } else if (e.getMessage() instanceof Float) {
             ChannelBuffer cb = buffer(4);
             cb.writeFloat((float) e.getMessage());
-            write(ctx, e.getFuture(), cb);
             logger.log(Level.INFO, "write float({0}) --- {1}",
                     new Object[]{e.getMessage(), Thread.currentThread().getName()});
+            write(ctx, e.getFuture(), cb);
         } else {
+            logger.log(Level.INFO, "I am here... not any type");        
+            //ctx.sendDownstream(e);
+            write(ctx, e.getFuture(), e.getMessage());
             super.writeRequested(ctx, e);
         }
     }
 }
 
+/*
+class WritemessageHandler extends SimpleChannelHandler {
+
+    private static final Logger logger = HCVEAsyncServer.logger;
+    private static DecimalFormat df = HCVEAsyncServer.df;
+    
+    @Override
+    public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
+        if (e.getMessage() instanceof RecvSPData) {
+            logger.log(Level.INFO, "I am here");
+            SendSPData sdata = new SendSPData();
+            int curSN = ChannelState.writeSN.get(e.getChannel());
+
+            if (Monitor.command == COMMANDSTATE.INIT) {
+                sdata.setSyncData();
+            } else {
+                if (ChannelState.writeTS.get(e.getChannel()).get(curSN).getTime() < Monitor.writeTS.get(curSN).getTime()) {
+                    sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
+                } else {
+                    sdata.setWaitData();
+                }
+            }
+            //e.getChannel().write(sdata);
+            write(ctx, e.getFuture(), sdata);
+        } else {
+           logger.log(Level.INFO, "I am here... not recvspdata");
+           super.writeRequested(ctx, e);
+        }
+    }
+}
+*/
+
 @Sharable
 class ServerHandler extends SimpleChannelHandler {
 
     private static final Logger logger = HCVEAsyncServer.logger;
+    private static DecimalFormat df = HCVEAsyncServer.df;
 
     @Override
     public void channelConnected(ChannelHandlerContext ctx, ChannelStateEvent e) throws Exception {
@@ -286,42 +362,25 @@ class ServerHandler extends SimpleChannelHandler {
     }
 
     @Override
-    public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
-        if (e.getMessage() instanceof RecvSPData) {
-            SendSPData sdata = new SendSPData();
-            int curSN = ChannelState.writeSN.get(e.getChannel());
-            
-            if (Monitor.command == COMMANDSTATE.INIT) {
-                sdata.setSyncData();
-            }else{
-                if (ChannelState.writeTS.get(e.getChannel()).get(curSN).getTime() < Monitor.writeTS.get(curSN).getTime()) {
-                    sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
-                }else {
-                    sdata.setWaitData();
-                }
-            }
-            write(ctx, e.getFuture(), sdata);
-        }
-    }
-
-    @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
         if (e.getMessage() instanceof RecvSPData) {
             RecvSPData rdata = (RecvSPData) e.getMessage();
-            //write-in message 
 
-            int curSN = ChannelState.readSN.get(e.getChannel());
+            int curSN = ChannelState.readSN.get(e.getChannel());            
+            /* write received message  into messageSet
+             *   need: get readSN, set readTS, update messageSet with sn=readSN, add readSN by 1
+             */            
+            // update Timestamp
             ChannelState.readTS.get(e.getChannel()).add(curSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
-
+            // write received Message
             ChannelState.messagemapSet.get(e.getChannel()).get(curSN).putAll(rdata.getSPData());
-            DecimalFormat df = new DecimalFormat("+###.##;-###.##");
+            // add readSN by 1
+            ChannelState.readSN.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
+            
             logger.log(Level.INFO, "messagemap#{0} from {1}: ({2}, {3}) --- {4}",
                     new Object[]{curSN + 1, e.getChannel(),
-                        df.format(rdata.getSPData().get('x')),
-                        df.format(rdata.getSPData().get('y')),
-                        Thread.currentThread().getName()});
-
-            ChannelState.readSN.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
+                        df.format(rdata.getSPData().get('x')), df.format(rdata.getSPData().get('y')), Thread.currentThread().getName()});
+            e.getChannel().write(rdata);
         } else if (e.getMessage() instanceof ChannelBuffer) {
             ChannelBuffer buf = (ChannelBuffer) e.getMessage();
             //write-in message 
@@ -333,27 +392,22 @@ class ServerHandler extends SimpleChannelHandler {
             ByteBuffer bb = ByteBuffer.wrap(buf.array());
             DecimalFormat df = new DecimalFormat("+###.##;-###.##");
             logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
-                    new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat()),
-                        Thread.currentThread().getName()});
+                    new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat()), Thread.currentThread().getName()});
             bb.flip();
-
-        }
-
-        ctx.sendDownstream(e);
+           e.getChannel().write(e.getMessage());            
+        }        
     }
 
     @Override
     public void channelDisconnected(ChannelHandlerContext ctx, ChannelStateEvent e) {
         //Invoked when a Channel was disconnected from its remote peer.
-        logger.log(Level.INFO, "Disconnection from {0}",
-                new Object[]{e.getChannel()});
+        logger.log(Level.INFO, "Disconnection from {0}", new Object[]{e.getChannel()});
     }
 
     @Override
     public void channelClosed(ChannelHandlerContext ctx, ChannelStateEvent e) {
         //Invoked when a Channel was closed and all its related resources were released
-        logger.log(Level.INFO, "Closed from {0}",
-                new Object[]{e.getChannel()});
+        logger.log(Level.INFO, "Closed from {0}", new Object[]{e.getChannel()});
     }
 
     @Override
@@ -379,7 +433,9 @@ class ServerPipelineFactory implements ChannelPipelineFactory {
         }
         logger.log(Level.INFO, "creae a new pipeline.");
 
-        return pipeline(new MessageDecoder(), new HCVDataDecoder(), SHARED,new HCVDataEncoder());
+        return pipeline(new MessageDecoder(), new HCVDataDecoder(), 
+                SHARED, 
+                new HCVDataEncoder());
     }
 }
 
@@ -394,10 +450,15 @@ class Monitor extends Thread {
 
     public static void initWriteTS() {
         writeTS = new ArrayList();
-        Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+        //Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+        Timestamp ts = new Timestamp(0L);
         for (int i = 0; i < Monitor.maxSN; i++) {
             writeTS.add(ts);
         };
+    }
+    
+    public boolean isAllChannelsDoneRead(int readSN) {
+        return true;        
     }
 
     public boolean isARC() {
@@ -416,8 +477,11 @@ class Monitor extends Thread {
     public void run() {
         try {
             sn = (sn + 1) % maxSN;
-            boolean readyMonitored = true;
+            boolean readyMonitored = false;
             for (;;) {
+                Thread.sleep(1500);
+                
+                
                 if (readyMonitored) {
                     command = COMMANDSTATE.ALLREAD;
                     Thread.sleep(1500);
@@ -450,7 +514,8 @@ public class HCVEAsyncServer {
     static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));
     static final int iPort = 7788;
     static final int iMaxNumOfConn = 2;
-    static final boolean isMonitorUp = true;
+    static final boolean isMonitorUp = true;    
+    static final DecimalFormat df = new DecimalFormat("+###.##;-###.##");
 
     public HCVEAsyncServer() {
     }
