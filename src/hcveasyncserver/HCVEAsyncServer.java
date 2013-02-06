@@ -64,17 +64,27 @@ final class ChannelState {
             return COMMANDSTATE.OFF;
         }
     };
+    
+    /** The expected received message's SN
+     * @return
+     *  readSN: next sequential number (SN) which indicates next received message number. Start from 0.
+     * */
     static final ChannelLocal<Integer> readSN = new ChannelLocal<Integer>() {
         @Override
         protected Integer initialValue(Channel ch) {
             return 0;
         }
     };
+    
+    /** Timestamp used to record when we received the specified message
+     *  @return
+     *   MapList of Timestamp
+     * */
     static final ChannelLocal<List<Timestamp>> readTS = new ChannelLocal<List<Timestamp>>() {
         @Override
         protected List<Timestamp> initialValue(Channel ch) {
             List<Timestamp> ms = new ArrayList<>();
-            //Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+            //Timestamp ts = new Timestamp(System.currentTimeMillis());
             Timestamp ts = new Timestamp(0L);
             for (int i = 0; i < Monitor.maxSN; i++) {
                 ms.add(ts);
@@ -82,29 +92,37 @@ final class ChannelState {
             return (List<Timestamp>) ms;
         }
     };
+
+    /** Sequential number of the last written message
+     *  @ return: Last written SN. Remmber its intial value is -1 coz our messages begin from 0.
+     * */    
     static final ChannelLocal<Integer> writeSN = new ChannelLocal<Integer>() {
         @Override
         protected Integer initialValue(Channel ch) {
             return -1;
         }
-    };
+    };    
+    
     static final ChannelLocal<List<Timestamp>> writeTS = new ChannelLocal<List<Timestamp>>() {
         @Override
         protected List<Timestamp> initialValue(Channel ch) {
             List<Timestamp> ms = new ArrayList<>();
-            Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+            Timestamp ts = new Timestamp(System.currentTimeMillis());
             for (int i = 0; i < Monitor.maxSN; i++) {
                 ms.add(ts);
             };
             return (List<Timestamp>) ms;
         }
     };
+    
+    /** depreciated. Need to be removed in the future. */
     static final ChannelLocal<Integer> sn = new ChannelLocal<Integer>() {
         @Override
         protected Integer initialValue(Channel ch) {
             return 0;
         }
     };
+    
     static final ChannelLocal<ArrayList<Map>> messagemapSet = new ChannelLocal<ArrayList<Map>>() {
         @Override
         protected ArrayList<Map> initialValue(Channel ch) {
@@ -115,6 +133,8 @@ final class ChannelState {
             return (ArrayList<Map>) ms;
         }
     };
+    
+    /** depreciated. Need to be removed in the future. */    
     // old(2013-01-24), use map instead.
     static final ChannelLocal<ArrayList<ByteArrayOutputStream>> messageSet = new ChannelLocal<ArrayList<ByteArrayOutputStream>>() {
         @Override
@@ -313,7 +333,7 @@ class MessageEncoder extends SimpleChannelHandler {
                 {
                     msg = msg.concat("WAIT_BEFOREZEROSTART");
                     sdata.setReadyData(-1f, -1f, -1f, -1f);
-                    //ChannelState.writeTS.get(e.getChannel()).add(lastSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
+                    //ChannelState.writeTS.get(e.getChannel()).add(lastSN, new Timestamp(System.currentTimeMillis()));
                     curSN = lastSN;
                     /*
                     logger.log(Level.INFO, "USER-{0}, WAIT_BEFOREZEROSTART-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
@@ -325,7 +345,7 @@ class MessageEncoder extends SimpleChannelHandler {
                         msg = msg.concat("WAIT_ZEROSTART");
                         sdata.setReadyData(0f, 0f, 0f, 0f);
                         ChannelState.writeSN.set(e.getChannel(), curSN);
-                        ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
+                        ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(System.currentTimeMillis()));
                         /*
                         logger.log(Level.INFO, "USER-{0}, WAIT_ZEROSTART-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
                                 new Object[]{e.getChannel(), curSN,
@@ -336,7 +356,7 @@ class MessageEncoder extends SimpleChannelHandler {
                         msg = msg.concat("READY");
                         sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
                         ChannelState.writeSN.set(e.getChannel(), curSN);
-                        ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
+                        ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(System.currentTimeMillis()));
                         /*
                         logger.log(Level.INFO, "USER-{0}, READY-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
                                 new Object[]{e.getChannel(), curSN,
@@ -351,7 +371,7 @@ class MessageEncoder extends SimpleChannelHandler {
                          new Object[]{e.getChannel(), Thread.currentThread().getName()});
                          */
                         sdata.setReadyData(0f, 0f, 0f, 0f);
-                        ChannelState.writeTS.get(e.getChannel()).add(lastSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
+                        ChannelState.writeTS.get(e.getChannel()).add(lastSN, new Timestamp(System.currentTimeMillis()));
                         curSN = lastSN;
                         /*
                         logger.log(Level.INFO, "USER-{0}, WAIT_ZEROSTART-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
@@ -402,7 +422,7 @@ class ServerHandler extends SimpleChannelHandler {
              *   need: get readSN, set readTS, update messageSet with sn=readSN, add readSN by 1
              */
             // update Timestamp
-            ChannelState.readTS.get(e.getChannel()).add(curSN, new Timestamp(Calendar.getInstance().getTime().getTime()));
+            ChannelState.readTS.get(e.getChannel()).add(curSN, new Timestamp(System.currentTimeMillis()));
             // write received Message
             ChannelState.messagemapSet.get(e.getChannel()).get(curSN).putAll(rdata.getSPData());
             // add readSN by 1
@@ -486,7 +506,7 @@ class Monitor extends Thread {
     public static void initWriteTS() 
     {
         writeTS = new ArrayList();
-        //Timestamp ts = new Timestamp(Calendar.getInstance().getTime().getTime());
+        //Timestamp ts = new Timestamp(System.currentTimeMillis());
         Timestamp ts = new Timestamp(0L);
         for (int i = 0; i < Monitor.maxSN; i++) { writeTS.add(ts); };
     }
@@ -525,7 +545,7 @@ class Monitor extends Thread {
     public void run() {
         try {
             boolean readyMonitored = true;
-            ts_start = new Timestamp(Calendar.getInstance().getTime().getTime());
+            ts_start = new Timestamp(System.currentTimeMillis());
             Monitor.command = COMMANDSTATE.ALLREAD;
             for (;;) {
                 if (readyMonitored)
@@ -537,7 +557,7 @@ class Monitor extends Thread {
                     }
                     Thread.sleep(150);
                     if (isAllChannelsReadCompleted()) {
-                        Timestamp ts_startnext = new Timestamp(Calendar.getInstance().getTime().getTime());
+                        Timestamp ts_startnext = new Timestamp(System.currentTimeMillis());
                         logger.log(Level.INFO, "MESSAGEREAD-#{0}, TIME(ms)-{1}", new Object[]{sn, ts_startnext.getTime() - ts_start.getTime()});
                         ts_start = ts_startnext;
                         updateSN(ts_startnext);
