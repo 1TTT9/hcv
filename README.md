@@ -18,3 +18,5 @@ send floods of messages and server replies according to its current result.
 (Take a look on enum WRITETYPE for details) Here I assume network delay is less
 important than computational delay*, and will be corrected right after the 
 testing. 
+
+2013-02-06: Replace usage of Calendar() with System.currentTimeMillis()
