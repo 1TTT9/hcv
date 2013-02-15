@@ -4,16 +4,13 @@
  */
 package hcveasyncserver;
 
+import hcvengine.HCVEngine;
 import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.sql.Timestamp;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -38,7 +35,7 @@ import org.jboss.netty.channel.group.ChannelGroup;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 import org.jboss.netty.handler.codec.replay.*;
-import org.jboss.netty.handler.timeout.WriteTimeoutHandler;
+
 
 enum WRITETYPE {
 
@@ -493,6 +490,7 @@ class ServerPipelineFactory implements ChannelPipelineFactory {
     }
 }
 
+
 class Monitor extends Thread {
 
     static final Logger logger = HCVEAsyncServer.logger;
@@ -574,13 +572,38 @@ class Monitor extends Thread {
     }
 }
 
+
+class EngineHandler extends Thread {
+    static final Logger logger = HCVEAsyncServer.logger;
+    
+    @Override
+    public void run(){
+        try {
+            HCVEngine engine = new HCVEngine();
+            engine.plotWindow();
+            String sVROMain = engine.plotVRObject(1.f, 1.f, 5.f, 5.f, 60.f, 60.f);
+            logger.log(Level.INFO, "An VRObject created, id={0}", new Object[]{sVROMain});
+            
+            float[] pos;
+            while (true){
+                engine.step();
+                pos = engine.getPosition(sVROMain);
+                //logger.log(Level.INFO, "id[{0}], ({1}, {2})", new Object[]{sVROMain, pos[0], pos[1]});
+                Thread.sleep(1000);
+            }
+        } catch (InterruptedException e){
+        }
+    }
+}
+
+
 /**
  *
  * @author demo
  */
 public class HCVEAsyncServer {
 
-    static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
+    public static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
     //ChannelGroup constrcut requires name of the group as a parameter.    
     static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));
     static final int iPort = 7788;
@@ -600,6 +623,10 @@ public class HCVEAsyncServer {
             logger.log(Level.INFO, "Monitor starts.");
         }
 
+        //engine
+        EngineHandler ehd = new EngineHandler();
+        ehd.start();
+        
         ServerBootstrap bootstrap = new ServerBootstrap(
                 new NioServerSocketChannelFactory(
                 Executors.newCachedThreadPool(), Executors.newCachedThreadPool()));
