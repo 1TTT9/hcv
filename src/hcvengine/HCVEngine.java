@@ -37,7 +37,7 @@ public class HCVEngine {
     final World world;
     static final Vec2 gravity = new Vec2(0.f, 0.f);    
     static final boolean doSleep = true;   
-    static Vec2 windowSize = new Vec2(20.f, 20.f);
+    static Vec2 windowSize = new Vec2(800.f, 600.f);
     static float windowWidth = 10.f;
     static float timestamp = 1.f/60.f;
     static int velocityInterations = 6;
@@ -52,6 +52,10 @@ public class HCVEngine {
         vrObjectMap = new HashMap<String, Body>();
     }
 
+    public float[] getWindowSize(){
+        return new float[]{windowSize.x, windowSize.y};
+    }
+    
     public void plotWindow()
     {
         List<Vec2> wallsInfo = new ArrayList<Vec2>();
@@ -84,7 +88,7 @@ public class HCVEngine {
      *     Velocity of X component, Y component (Velocity)
      * Return: UUID of cretaed virtual object
      */
-    public String plotVRObject(float width, float height, float x, float y, float vx, float vy){
+    public String plotVObject(float width, float height, float x, float y, float vx, float vy){
         Vec2 volume = new Vec2(width, height);
         Vec2 position = new Vec2(x, y);
         Vec2 velocity = new Vec2(vx, vy);
@@ -99,9 +103,9 @@ public class HCVEngine {
         
         FixtureDef fixtureDef = new FixtureDef();
         fixtureDef.shape = dynamicBox;
-        fixtureDef.restitution = 1.f;
+        fixtureDef.restitution = 0.7f;
         fixtureDef.density = 1.f;
-        fixtureDef.friction = 0.3f;
+        fixtureDef.friction = 0.f;
         subjectBody.createFixture(fixtureDef);
         subjectBody.setLinearVelocity(velocity);
         

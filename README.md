@@ -20,3 +20,10 @@ important than computational delay*, and will be corrected right after the
 testing. 
 
 2013-02-06: Replace usage of Calendar() with System.currentTimeMillis()
+
+2013-02-20: Add a new protocol state called MSYNC to synchronize data of 
+virtual object named voMain and present its rendering. 
+(NOTE) Here comes a framerate issue that engine(server-side) used to deliver 
+voMain's latest position with framerate M and window(client-side) draws it
+ according to received data with framerate N. However, voMain's speed seems to
+ be limited for some reasons. Need to be verified.

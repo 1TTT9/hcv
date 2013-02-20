@@ -39,7 +39,7 @@ import org.jboss.netty.handler.codec.replay.*;
 
 enum WRITETYPE {
 
-    INIT, SYNC, WAIT, READY, ADJUST,
+    INIT, SYNC, MSYNC, WAIT, READY, ADJUST,
 }
 
 enum COMMANDSTATE {
@@ -166,6 +166,13 @@ class SendSPData {
         this.wt = WRITETYPE.SYNC;
     }
 
+    public void setSyncVOMainData(float x, float y) {
+        this.wt = WRITETYPE.MSYNC;
+        mdata.put('x', x);
+        mdata.put('y', y);        
+    }
+    
+    
     public void setWaitData() {
         this.wt = WRITETYPE.WAIT;
     }
@@ -256,11 +263,14 @@ class HCVDataEncoder extends SimpleChannelHandler {
             case SYNC:
             case WAIT:
                 break;
+            case MSYNC:
+                cbSize = 9; // 1 +4 +4
+                break;
             case READY:
-                cbSize = 17;
+                cbSize = 17; // 1 +4 +4 +4 +4
                 break;
             case ADJUST:
-                cbSize = 5;
+                cbSize = 5;  // 1 +4
                 break;
             default:
                 break;
@@ -280,6 +290,10 @@ class HCVDataEncoder extends SimpleChannelHandler {
 
             if (sdata.getContentType() == WRITETYPE.SYNC) {
                 cb.writeByte('1');
+            } else if (sdata.getContentType() == WRITETYPE.MSYNC) {
+                cb.writeByte('5');
+                cb.writeFloat((float) wdata.get('x'));
+                cb.writeFloat((float) wdata.get('y'));                
             } else if (sdata.getContentType() == WRITETYPE.WAIT) {
                 cb.writeByte('2');
             } else if (sdata.getContentType() == WRITETYPE.ADJUST) {
@@ -322,8 +336,10 @@ class MessageEncoder extends SimpleChannelHandler {
             int curSN = (lastSN + 1) % Monitor.maxSN;
             
             if (Monitor.command == COMMANDSTATE.INIT) {
-                sdata.setSyncData();
-                logger.log(Level.INFO, "sendto {0}: SYNC", new Object[]{e.getChannel()});
+                //sdata.setSyncData();
+                float[] pos = EngineHandler.getVOMainPosition();
+                sdata.setSyncVOMainData(pos[0], pos[1]);
+                //logger.log(Level.INFO, "sendto {0}: SYNC", new Object[]{e.getChannel()});
             } else {
                 String msg = "";
                 if (Monitor.writeSN < 0)
@@ -378,11 +394,12 @@ class MessageEncoder extends SimpleChannelHandler {
                                     */ 
                     }
                 }
+                /*
                 logger.log(Level.INFO, "USER-{0}, {6}-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
                         new Object[]{e.getChannel(), curSN,
                             df.format(sdata.getData().get('x')), df.format(sdata.getData().get('y')),
                             df.format(sdata.getData().get('h')), df.format(sdata.getData().get('v')), msg});
-                
+                            */ 
             }
             write(ctx, e.getFuture(), sdata);
         } else {
@@ -425,8 +442,10 @@ class ServerHandler extends SimpleChannelHandler {
             // add readSN by 1
             ChannelState.readSN.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
 
+            /*
             logger.log(Level.INFO, "USER-{0}, RECV-#{1}, DATA-[ X({2}), Y({3})]",
                     new Object[]{e.getChannel(), curSN, df.format(rdata.getSPData().get('x')), df.format(rdata.getSPData().get('y'))});
+                    */ 
             
             e.getChannel().write(rdata);
         } else if (e.getMessage() instanceof ChannelBuffer)  {
@@ -544,7 +563,8 @@ class Monitor extends Thread {
         try {
             boolean readyMonitored = true;
             ts_start = new Timestamp(System.currentTimeMillis());
-            Monitor.command = COMMANDSTATE.ALLREAD;
+            //Monitor.command = COMMANDSTATE.ALLREAD;
+            Monitor.command = COMMANDSTATE.INIT;
             for (;;) {
                 if (readyMonitored)
                 {
@@ -556,7 +576,7 @@ class Monitor extends Thread {
                     Thread.sleep(150);
                     if (isAllChannelsReadCompleted()) {
                         Timestamp ts_startnext = new Timestamp(System.currentTimeMillis());
-                        logger.log(Level.INFO, "MESSAGEREAD-#{0}, TIME(ms)-{1}", new Object[]{sn, ts_startnext.getTime() - ts_start.getTime()});
+                        //logger.log(Level.INFO, "MESSAGEREAD-#{0}, TIME(ms)-{1}", new Object[]{sn, ts_startnext.getTime() - ts_start.getTime()});
                         ts_start = ts_startnext;
                         updateSN(ts_startnext);
                     }
@@ -575,23 +595,32 @@ class Monitor extends Thread {
 
 class EngineHandler extends Thread {
     static final Logger logger = HCVEAsyncServer.logger;
+    static final HCVEngine engine = new HCVEngine();
+    static final float vr_size = 50.f;
+    static String sVOMain = null;
+    
+    public static float[] getVOMainPosition() {
+        return engine.getPosition(sVOMain);
+    }
     
     @Override
     public void run(){
         try {
-            HCVEngine engine = new HCVEngine();
             engine.plotWindow();
-            String sVROMain = engine.plotVRObject(1.f, 1.f, 5.f, 5.f, 60.f, 60.f);
-            logger.log(Level.INFO, "An VRObject created, id={0}", new Object[]{sVROMain});
+            float[] windowSize = engine.getWindowSize();
+            //String sVROMain = engine.plotVRObject(1.f, 1.f, 5.f, 5.f, 60.f, 60.f);
+            sVOMain = engine.plotVObject(vr_size*0.5f, vr_size*0.5f, windowSize[0]*0.5f, 0.f, 0.f, 800.f);
+            logger.log(Level.INFO, "An VRObject created, id={0}", new Object[]{sVOMain});
             
             float[] pos;
             while (true){
                 engine.step();
-                pos = engine.getPosition(sVROMain);
-                //logger.log(Level.INFO, "id[{0}], ({1}, {2})", new Object[]{sVROMain, pos[0], pos[1]});
-                Thread.sleep(1000);
+                pos = engine.getPosition(sVOMain);
+                logger.log(Level.INFO, "id[{0}], ({1}, {2})", new Object[]{sVOMain, pos[0], pos[1]});
+                Thread.sleep(0);
             }
         } catch (InterruptedException e){
+            
         }
     }
 }
@@ -606,6 +635,7 @@ public class HCVEAsyncServer {
     public static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
     //ChannelGroup constrcut requires name of the group as a parameter.    
     static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));
+    
     static final int iPort = 7788;
     static final int iMaxNumOfConn = 2;
     static final boolean isMonitorUp = true;
@@ -623,9 +653,9 @@ public class HCVEAsyncServer {
             logger.log(Level.INFO, "Monitor starts.");
         }
 
-        //engine
-        EngineHandler ehd = new EngineHandler();
-        ehd.start();
+        // engine
+        EngineHandler ehdr = new EngineHandler();
+        ehdr.start();
         
         ServerBootstrap bootstrap = new ServerBootstrap(
                 new NioServerSocketChannelFactory(
