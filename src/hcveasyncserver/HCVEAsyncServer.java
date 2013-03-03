@@ -5,25 +5,22 @@
 package hcveasyncserver;
 
 import hcvengine.HCVEngine;
-import java.io.ByteArrayOutputStream;
+import hcvengine.HCVEngineModel;
 import java.net.InetSocketAddress;
 import java.sql.Timestamp;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.buffer.ChannelBuffer;
-import static org.jboss.netty.buffer.ChannelBuffers.*;
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.ChannelHandler.Sharable;
 import org.jboss.netty.channel.ChannelHandlerContext;
-import org.jboss.netty.channel.ChannelLocal;
 import org.jboss.netty.channel.ChannelPipeline;
 import org.jboss.netty.channel.ChannelPipelineFactory;
 import org.jboss.netty.channel.ChannelStateEvent;
@@ -34,468 +31,21 @@ import org.jboss.netty.channel.SimpleChannelHandler;
 import org.jboss.netty.channel.group.ChannelGroup;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
-import org.jboss.netty.handler.codec.replay.*;
 
 
-enum WRITETYPE {
-
-    INIT, SYNC, MSYNC, WAIT, READY, ADJUST,
-}
-
-enum COMMANDSTATE {
-
-    OFF, INIT, SYNCREAD, SYNCWRITE, WAITREAD, WAITWRITE, ALLREAD, ALLWRITE,
-}
-
-final class ChannelState {
-
-    static final ChannelLocal<Boolean> loginIn = new ChannelLocal<Boolean>() {
-        @Override
-        protected Boolean initialValue(Channel ch) {
-            return false;
-        }
-    };
-    static final ChannelLocal<COMMANDSTATE> command = new ChannelLocal<COMMANDSTATE>() {
-        @Override
-        protected COMMANDSTATE initialValue(Channel ch) {
-            return COMMANDSTATE.OFF;
-        }
-    };
-    
-    /** The expected received message's SN
-     * @return
-     *  readSN: next sequential number (SN) which indicates next received message number. Start from 0.
-     * */
-    static final ChannelLocal<Integer> readSN = new ChannelLocal<Integer>() {
-        @Override
-        protected Integer initialValue(Channel ch) {
-            return 0;
-        }
-    };
-    
-    /** Timestamp used to record when we received the specified message
-     *  @return
-     *   MapList of Timestamp
-     * */
-    static final ChannelLocal<List<Timestamp>> readTS = new ChannelLocal<List<Timestamp>>() {
-        @Override
-        protected List<Timestamp> initialValue(Channel ch) {
-            List<Timestamp> ms = new ArrayList<>();
-            //Timestamp ts = new Timestamp(System.currentTimeMillis());
-            Timestamp ts = new Timestamp(0L);
-            for (int i = 0; i < Monitor.maxSN; i++) {
-                ms.add(ts);
-            };
-            return (List<Timestamp>) ms;
-        }
-    };
-
-    /** Sequential number of the last written message
-     *  @ return: Last written SN. Remmber its intial value is -1 coz our messages begin from 0.
-     * */    
-    static final ChannelLocal<Integer> writeSN = new ChannelLocal<Integer>() {
-        @Override
-        protected Integer initialValue(Channel ch) {
-            return -1;
-        }
-    };    
-    
-    static final ChannelLocal<List<Timestamp>> writeTS = new ChannelLocal<List<Timestamp>>() {
-        @Override
-        protected List<Timestamp> initialValue(Channel ch) {
-            List<Timestamp> ms = new ArrayList<>();
-            Timestamp ts = new Timestamp(System.currentTimeMillis());
-            for (int i = 0; i < Monitor.maxSN; i++) {
-                ms.add(ts);
-            };
-            return (List<Timestamp>) ms;
-        }
-    };
-    
-    /** depreciated. Need to be removed in the future. */
-    static final ChannelLocal<Integer> sn = new ChannelLocal<Integer>() {
-        @Override
-        protected Integer initialValue(Channel ch) {
-            return 0;
-        }
-    };
-    
-    static final ChannelLocal<ArrayList<Map>> messagemapSet = new ChannelLocal<ArrayList<Map>>() {
-        @Override
-        protected ArrayList<Map> initialValue(Channel ch) {
-            List<Map> ms = new ArrayList<>();
-            for (int i = 0; i < Monitor.maxSN; i++) {
-                ms.add(new HashMap());
-            };
-            return (ArrayList<Map>) ms;
-        }
-    };
-    
-    /** depreciated. Need to be removed in the future. */    
-    // old(2013-01-24), use map instead.
-    static final ChannelLocal<ArrayList<ByteArrayOutputStream>> messageSet = new ChannelLocal<ArrayList<ByteArrayOutputStream>>() {
-        @Override
-        protected ArrayList<ByteArrayOutputStream> initialValue(Channel ch) {
-            List<ByteArrayOutputStream> ms = new ArrayList<>();
-            for (int i = 0; i < Monitor.maxSN; i++) {
-                ms.add(new ByteArrayOutputStream());
-            };
-            return (ArrayList<ByteArrayOutputStream>) ms;
-        }
-    };
-}
-
-class SendSPData {
-
-    private WRITETYPE wt;
-    /* Tell clients
-     * (1) sync  : server is synchronizing all channels.
-     * (2) ready : server is ready to compute.
-     * (3) wait  : server is waiting for a incomplete SN 
-     * (4) pos   : server now sends a just-finished new position and feedback
-     * (5) adj   : server suggests you to adjust your fps
-     */
-    private Map mdata;
-
-    public SendSPData() {
-        this.wt = WRITETYPE.INIT;
-        mdata = new HashMap();
-    }
-
-    public void setSyncData() {
-        this.wt = WRITETYPE.SYNC;
-    }
-
-    public void setSyncVOMainData(float x, float y) {
-        this.wt = WRITETYPE.MSYNC;
-        mdata.put('x', x);
-        mdata.put('y', y);        
-    }
-    
-    
-    public void setWaitData() {
-        this.wt = WRITETYPE.WAIT;
-    }
-
-    public void setReadyData(float x, float y, float v, float h) {
-        this.wt = WRITETYPE.READY;
-        mdata.put('x', x);
-        mdata.put('y', y);
-        mdata.put('h', h);
-        mdata.put('v', v);
-    }
-
-    public void setAdjustData(int fps) {
-        this.wt = WRITETYPE.ADJUST;
-        mdata.put("fps", fps);
-    }
-
-    public Map getData() {
-        return this.mdata;
-    }
-
-    public WRITETYPE getContentType() {
-        return this.wt;
-    }
-}
-
-class RecvSPData {
-
-    private final Map mdata;
-
-    public RecvSPData(float x, float y) {
-        this.mdata = new HashMap();
-        this.mdata.put('x', x);
-        this.mdata.put('y', y);
-    }
-
-    public Map getSPData() {
-        return mdata;
-    }
-}
-
-class MessageDecoder extends ReplayingDecoder<VoidEnum> {
-
-    private boolean readLength;
-    private int length;
-
-    @Override
-    protected Object decode(ChannelHandlerContext ctx, Channel handler, ChannelBuffer buffer, VoidEnum state) {
-        if (!readLength) {
-            length = buffer.readInt();
-            readLength = true;
-            /* checkpoint():
-             *   update the initial position of the buffer so that replayingDecoder can rewind the last
-             * readerIndex of the buffer to the last position where you called the checkpoint() method
-             */
-            checkpoint();
-        }
-
-        if (readLength) {
-            ChannelBuffer buf = buffer.readBytes(length);
-            readLength = false;
-            checkpoint();
-            return buf;
-        }
-        return null;
-    }
-}
-
-class HCVDataDecoder extends ReplayingDecoder<VoidEnum> {
-
-    private static final Logger logger = HCVEAsyncServer.logger;
-
-    @Override
-    protected Object decode(ChannelHandlerContext ctx, Channel handler, ChannelBuffer buffer, VoidEnum state) {
-        return new RecvSPData(buffer.readFloat(), buffer.readFloat());
-    }
-}
-
-class HCVDataEncoder extends SimpleChannelHandler {
-
-    private static final Logger logger = HCVEAsyncServer.logger;
-    private static DecimalFormat df = HCVEAsyncServer.df;
-
-    public static ChannelBuffer getChannelBuffer(WRITETYPE wt) {
-        int cbSize = 1;
-        switch (wt) {
-            case INIT:
-            case SYNC:
-            case WAIT:
-                break;
-            case MSYNC:
-                cbSize = 9; // 1 +4 +4
-                break;
-            case READY:
-                cbSize = 17; // 1 +4 +4 +4 +4
-                break;
-            case ADJUST:
-                cbSize = 5;  // 1 +4
-                break;
-            default:
-                break;
-        }
-        return buffer(cbSize);
-    }
-
-    @Override
-    public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
-
-        if (e.getMessage() instanceof SendSPData) {
-            //logger.log(Level.INFO, "transform SendSPData into ChannelBuffer");
-
-            SendSPData sdata = (SendSPData) e.getMessage();
-            ChannelBuffer cb = this.getChannelBuffer(sdata.getContentType());
-            Map wdata = sdata.getData();
-
-            if (sdata.getContentType() == WRITETYPE.SYNC) {
-                cb.writeByte('1');
-            } else if (sdata.getContentType() == WRITETYPE.MSYNC) {
-                cb.writeByte('5');
-                cb.writeFloat((float) wdata.get('x'));
-                cb.writeFloat((float) wdata.get('y'));                
-            } else if (sdata.getContentType() == WRITETYPE.WAIT) {
-                cb.writeByte('2');
-            } else if (sdata.getContentType() == WRITETYPE.ADJUST) {
-                cb.writeByte('4');
-                cb.writeFloat(3.14f);
-            } else if (sdata.getContentType() == WRITETYPE.READY) {
-                cb.writeByte('3');
-                cb.writeFloat((float) wdata.get('x'));
-                cb.writeFloat((float) wdata.get('y'));
-                cb.writeFloat((float) wdata.get('h'));
-                cb.writeFloat((float) wdata.get('v'));
-            } else {
-                cb.writeByte(128);
-                logger.log(Level.SEVERE, "No content type found. This line should not happen");
-            }
-            write(ctx, e.getFuture(), cb);
-        } else if (e.getMessage() instanceof Float) {
-            ChannelBuffer cb = buffer(4);
-            cb.writeFloat((float) e.getMessage());
-            logger.log(Level.INFO, "write float({0}) --- {1}",
-                    new Object[]{e.getMessage(), Thread.currentThread().getName()});
-            write(ctx, e.getFuture(), cb);
-        } else {
-            logger.log(Level.INFO, "I am here... not any type");
-            super.writeRequested(ctx, e);
-        }
-    }
-}
-
-class MessageEncoder extends SimpleChannelHandler {
-
-    private static final Logger logger = HCVEAsyncServer.logger;
-    private static DecimalFormat df = HCVEAsyncServer.df;
-
-    @Override
-    public void writeRequested(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
-        if (e.getMessage() instanceof RecvSPData) {
-            SendSPData sdata = new SendSPData();
-            int lastSN = ChannelState.writeSN.get(e.getChannel()); //***  current wiat-to-write SN  ***
-            int curSN = (lastSN + 1) % Monitor.maxSN;
-            
-            if (Monitor.command == COMMANDSTATE.INIT) {
-                //sdata.setSyncData();
-                float[] pos = EngineHandler.getVOMainPosition();
-                sdata.setSyncVOMainData(pos[0], pos[1]);
-                //logger.log(Level.INFO, "sendto {0}: SYNC", new Object[]{e.getChannel()});
-            } else {
-                String msg = "";
-                if (Monitor.writeSN < 0)
-                {
-                    msg = msg.concat("WAIT_BEFOREZEROSTART");
-                    sdata.setReadyData(-1f, -1f, -1f, -1f);
-                    //ChannelState.writeTS.get(e.getChannel()).add(lastSN, new Timestamp(System.currentTimeMillis()));
-                    curSN = lastSN;
-                    /*
-                    logger.log(Level.INFO, "USER-{0}, WAIT_BEFOREZEROSTART-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
-                            new Object[]{e.getChannel(), lastSN,
-                                df.format(sdata.getData().get('x')), df.format(sdata.getData().get('y')),
-                                df.format(sdata.getData().get('h')), df.format(sdata.getData().get('v'))}); */
-                } else {
-                    if (lastSN < 0) {
-                        msg = msg.concat("WAIT_ZEROSTART");
-                        sdata.setReadyData(0f, 0f, 0f, 0f);
-                        ChannelState.writeSN.set(e.getChannel(), curSN);
-                        ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(System.currentTimeMillis()));
-                        /*
-                        logger.log(Level.INFO, "USER-{0}, WAIT_ZEROSTART-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
-                                new Object[]{e.getChannel(), curSN,
-                                    df.format(sdata.getData().get('x')), df.format(sdata.getData().get('y')),
-                                    df.format(sdata.getData().get('h')), df.format(sdata.getData().get('v'))});
-                                    */
-                    } else if (Monitor.writeTS.get(lastSN).getTime() < ChannelState.writeTS.get(e.getChannel()).get(lastSN).getTime()) {
-                        msg = msg.concat("READY");
-                        sdata.setReadyData(3.14f, 3.14f, 3.14f, 3.14f);
-                        ChannelState.writeSN.set(e.getChannel(), curSN);
-                        ChannelState.writeTS.get(e.getChannel()).add(curSN, new Timestamp(System.currentTimeMillis()));
-                        /*
-                        logger.log(Level.INFO, "USER-{0}, READY-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
-                                new Object[]{e.getChannel(), curSN,
-                                    df.format(sdata.getData().get('x')), df.format(sdata.getData().get('y')),
-                                    df.format(sdata.getData().get('h')), df.format(sdata.getData().get('v'))});
-                                    */ 
-                    } else {
-                        msg = msg.concat("WAIT_ZEROSTART_OTHER");
-                        /*
-                         sdata.setWaitData();
-                         logger.log(Level.INFO, "sendto {0}: WAIT --- {1}",
-                         new Object[]{e.getChannel(), Thread.currentThread().getName()});
-                         */
-                        sdata.setReadyData(0f, 0f, 0f, 0f);
-                        ChannelState.writeTS.get(e.getChannel()).add(lastSN, new Timestamp(System.currentTimeMillis()));
-                        curSN = lastSN;
-                        /*
-                        logger.log(Level.INFO, "USER-{0}, WAIT_ZEROSTART-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
-                                new Object[]{e.getChannel(), lastSN,
-                                    df.format(sdata.getData().get('x')), df.format(sdata.getData().get('y')),
-                                    df.format(sdata.getData().get('h')), df.format(sdata.getData().get('v'))});
-                                    */ 
-                    }
-                }
-                /*
-                logger.log(Level.INFO, "USER-{0}, {6}-#{1}, DATA-[X({2}), Y({3}), H({4}), V({5})]",
-                        new Object[]{e.getChannel(), curSN,
-                            df.format(sdata.getData().get('x')), df.format(sdata.getData().get('y')),
-                            df.format(sdata.getData().get('h')), df.format(sdata.getData().get('v')), msg});
-                            */ 
-            }
-            write(ctx, e.getFuture(), sdata);
-        } else {
-            logger.log(Level.INFO, "I am here... not recvspdata");
-            super.writeRequested(ctx, e);
-        }
-    }
-}
-
-@Sharable
-class ServerHandler extends SimpleChannelHandler {
-
-    private static final Logger logger = HCVEAsyncServer.logger;
-    private static DecimalFormat df = HCVEAsyncServer.df;
-
-    @Override
-    public void channelConnected(ChannelHandlerContext ctx, ChannelStateEvent e) throws Exception {
-        ChannelState.loginIn.set(e.getChannel(), true);
-        HCVEAsyncServer.channelgroup.add(e.getChannel());
-        ChannelState.command.set(e.getChannel(), COMMANDSTATE.INIT);
-        logger.log(Level.INFO, "Channel {0}, now #channelgroup: {1}",
-                new Object[]{e.getChannel().toString(), HCVEAsyncServer.channelgroup.size()});
-        ChannelState.command.set(e.getChannel(), COMMANDSTATE.WAITREAD);
-    }
-
-    @Override
-    public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
-        if (e.getMessage() instanceof RecvSPData) 
-        {
-            RecvSPData rdata = (RecvSPData) e.getMessage();
-
-            int curSN = ChannelState.readSN.get(e.getChannel());
-            /* write received message  into messageSet
-             *   need: get readSN, set readTS, update messageSet with sn=readSN, add readSN by 1
-             */
-            // update Timestamp
-            ChannelState.readTS.get(e.getChannel()).add(curSN, new Timestamp(System.currentTimeMillis()));
-            // write received Message
-            ChannelState.messagemapSet.get(e.getChannel()).get(curSN).putAll(rdata.getSPData());
-            // add readSN by 1
-            ChannelState.readSN.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
-
-            /*
-            logger.log(Level.INFO, "USER-{0}, RECV-#{1}, DATA-[ X({2}), Y({3})]",
-                    new Object[]{e.getChannel(), curSN, df.format(rdata.getSPData().get('x')), df.format(rdata.getSPData().get('y'))});
-                    */ 
-            
-            e.getChannel().write(rdata);
-        } else if (e.getMessage() instanceof ChannelBuffer)  {
-            ChannelBuffer buf = (ChannelBuffer) e.getMessage();
-            //write-in message 
-            int curSN = ChannelState.sn.get(e.getChannel());
-            ChannelState.messageSet.get(e.getChannel()).get(curSN).flush();
-            ChannelState.messageSet.get(e.getChannel()).get(curSN).write(buf.array());
-            ChannelState.sn.set(e.getChannel(), (curSN + 1) % Monitor.maxSN);
-
-            /*
-             ByteBuffer bb = ByteBuffer.wrap(buf.array());
-             logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
-             new Object[]{curSN + 1, e.getChannel(), df.format(bb.getFloat()), df.format(bb.getFloat()), Thread.currentThread().getName()});
-             bb.flip();
-             */
-            logger.log(Level.INFO, "message#{0} from {1}: ({2}, {3}) --- {4}",
-                    new Object[]{curSN + 1, e.getChannel(), df.format(buf.readFloat()), df.format(buf.readFloat()), Thread.currentThread().getName()});
-            e.getChannel().write(e.getMessage());
-        }
-    }
-
-    @Override
-    public void channelDisconnected(ChannelHandlerContext ctx, ChannelStateEvent e) {
-        //Invoked when a Channel was disconnected from its remote peer.
-        logger.log(Level.INFO, "Disconnection from {0}", new Object[]{e.getChannel()});
-    }
-
-    @Override
-    public void channelClosed(ChannelHandlerContext ctx, ChannelStateEvent e) {
-        //Invoked when a Channel was closed and all its related resources were released
-        logger.log(Level.INFO, "Closed from {0}", new Object[]{e.getChannel()});
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, ExceptionEvent e) {
-        //logger.log(Level.WARNING, "Unexpected expection...", e.getCause());
-        e.getChannel().close();
-    }
-}
 
 class ServerPipelineFactory implements ChannelPipelineFactory {
 
     private static final Logger logger = HCVEAsyncServer.logger;
     private static final ServerHandler SHARED = new ServerHandler();
-
-    public ServerPipelineFactory() {
-        super();
-    }
-
+    
+    /*
+     * Get pipeline of channel handlers for both upstream and downstream
+     * @return ChannelPipeline
+     * @note processing order of stream message
+     *   for upstream(incoming) messages, the order is MessageDecoder, HCVDataDecoder and SHARED, accordingly.
+     *   for downstream(outgoing) messages, the order is SHARED, MessageEncoder, HCVDataEncoder.
+     */
     @Override
     public ChannelPipeline getPipeline() throws Exception {
         if (HCVEAsyncServer.iMaxNumOfConn == 0 || HCVEAsyncServer.channelgroup.size() >= HCVEAsyncServer.iMaxNumOfConn) {
@@ -505,11 +55,252 @@ class ServerPipelineFactory implements ChannelPipelineFactory {
 
         return pipeline(new MessageDecoder(), new HCVDataDecoder(),
                 SHARED,
-                new HCVDataEncoder(), new MessageEncoder());
+                new MessageEncoder(), new HCVDataEncoder());
     }
 }
 
 
+class ChannelController implements Runnable{
+    final Logger logger = HCVEAsyncServer.logger;
+    
+    public static boolean isControllerReady = true;
+    private final HCVEngineModel model;
+    
+    public ChannelController(HCVEngineModel argModel){
+        model = argModel;
+    }
+    
+    private void checkChannelIncomedMessageFaut(){
+        Channel ch;
+        Iterator i = HCVEAsyncServer.channelgroup.iterator();
+        while (i.hasNext()) {
+            ch = (Channel) i.next();
+            if (ChannelState.inConnQueue.get(ch).isEmpty()){
+                continue;
+            }
+            
+            ConnItem item = ChannelState.inConnQueue.get(ch).pop();        
+            switch(item.state){
+                case INIT:
+                    break;
+                case LOGGNING:
+                    if (ChannelState.connectionState.get(ch) == ConnectionState.LOGGNING) {
+                        if (ChannelState.uuid.get(ch) == null) {
+                            ChannelState.uuid.set(ch, UUID.randomUUID().toString());
+                            logger.log(Level.INFO, "USER-{0}, is joining the game, uuid ={1}", new Object[]{ch, ChannelState.uuid.get(ch)});
+                        } else {
+                            logger.log(Level.INFO, "USER-{0}, is joining the game again, uuid ={1}", new Object[]{ch, ChannelState.uuid.get(ch)});
+                        }
+                    } else {
+                        logger.log(Level.INFO, "USER-{0}, joined the game already, uuid ={1}", new Object[]{ch, ChannelState.uuid.get(ch)});                        
+                    }
+                    break;
+                case MRECV:
+                    if (HCVEngineModel.isFocusInWindow(item.x, item.y)){
+                        logger.log(Level.INFO, "USER-{0}, is inside. Window({1}, {2}) -> World({3}, {4})", new Object[]{ch, item.x, item.y, 
+                            HCVEngineModel.transformWindowToWorld(item.x, item.y).x, HCVEngineModel.transformWindowToWorld(item.x, item.y).y});  
+                    }else{
+                        logger.log(Level.INFO, "USER-{0}, is out of window ({1}, {2})", new Object[]{ch, item.x, item.y});                         
+                    }
+                    break;
+                case QUIT:
+                    break;
+            }
+        }              
+    }
+    
+    private void updateFaut(){
+        Channel ch;
+        Iterator i = HCVEAsyncServer.channelgroup.iterator();
+        while (i.hasNext()) {
+            ch = (Channel) i.next();
+            
+            if (ChannelState.connectionState.get(ch) == ConnectionState.LOGGNING)
+            {
+                ChannelState.connectionState.set(ch, ConnectionState.READY);
+            }
+        }
+    }
+    
+    private void checkChannelIncomedMessage(){
+        Channel ch;
+        Iterator i = HCVEAsyncServer.channelgroup.iterator();
+        while (i.hasNext()) {
+            ch = (Channel) i.next();
+            if (ChannelState.inConnQueue.get(ch).isEmpty()){
+                continue;
+            }
+            
+            ConnItem item = ChannelState.inConnQueue.get(ch).pop();
+            switch(item.state){
+                case INIT:
+                    break;
+                case LOGGNING:
+                    if (ChannelState.connectionState.get(ch) == ConnectionState.LOGGNING){
+                        if (ChannelState.uuid.get(ch) == null){
+                            ChannelState.uuid.set(ch, UUID.randomUUID().toString());
+                            model.queueDeviceJoin(ChannelState.uuid.get(ch), HCVEngineModel.transformWindowToWorld(item.x, item.y));
+                            logger.log(Level.INFO, "USER-{0}, is joining the game, uuid ={1}", new Object[]{ch, ChannelState.uuid.get(ch)});
+                        }else{
+                            logger.log(Level.INFO, "USER-{0}, is joining the game and waiting for registration, uuid ={1}", new Object[]{ch, ChannelState.uuid.get(ch)});
+                        }
+                    } else {
+                        logger.log(Level.INFO, "USER-{0}, joined the game already, uuid ={1}", new Object[]{ch, ChannelState.uuid.get(ch)});                        
+                    }
+                    break;
+                case MRECV:
+                    if (HCVEngineModel.isFocusInWindow(item.x, item.y)){
+//                        logger.log(Level.INFO, "USER-{0}, is inside. Window({1}, {2}) -> World({3}, {4})", new Object[]{ch, item.x, item.y, 
+//                            HCVEngineModel.transformWindowToWorld(item.x, item.y).x, HCVEngineModel.transformWindowToWorld(item.x, item.y).y});                        
+                        model.queueDeviceMove(ChannelState.uuid.get(ch), HCVEngineModel.transformWindowToWorld(item.x, item.y));
+                    }else{
+                        model.queueDeviceIdle(ChannelState.uuid.get(ch), HCVEngineModel.transformWindowToWorld(item.x, item.y));
+                    }
+                    break;
+                case QUIT:
+                    model.queueDeviceQuit(ChannelState.uuid.get(ch), HCVEngineModel.transformWindowToWorld(item.x, item.y));
+                    break;
+            }
+        }        
+    }
+    
+    
+    public void run(){
+        if (!isControllerReady){
+            logger.log(Level.WARNING, "Controller is not ready. Quit");
+            return;
+        }
+        logger.log(Level.INFO, "Controller is now running.");                
+
+        while (true) {
+            if (EngineController.isControllerReady){
+                checkChannelIncomedMessage();
+            }else{
+                checkChannelIncomedMessageFaut();
+                updateFaut();
+//                float[] pos = hcvengine.HCVEngineModel.tranformWorldToWindow(hcvengine.HCVEngineModel.getVOMainPosition());
+//                logger.log(Level.INFO, "VOMain Position ({0},{1}).", new Object[]{pos[0], pos[1]});  
+            }
+            
+            try{
+                Thread.sleep(20);
+            }catch(InterruptedException e){
+            }
+        }
+        
+    }
+}
+
+class EngineController implements Runnable{
+    final Logger logger = HCVEAsyncServer.logger;
+    
+    public static boolean isControllerReady = true;
+    private final HCVEngineModel model;
+    
+    public EngineController(HCVEngineModel argModel){
+        model = argModel;
+        if (isControllerReady){
+            model.init();
+        }
+    }
+    
+    public void run(){
+        if (!isControllerReady){
+            logger.log(Level.WARNING, "Controller is not ready. Quit.");
+            return;
+        }
+        logger.log(Level.INFO, "Controller is now running.");        
+        
+        Channel ch;
+        while (true){
+            model.update();
+            
+            Iterator i = HCVEAsyncServer.channelgroup.iterator();
+            while (i.hasNext()) {
+                ch = (Channel) i.next();
+                switch(ChannelState.connectionState.get(ch)){
+                    case LOGGNING:
+                        if (model.isDeviceExist(ChannelState.uuid.get(ch))){
+                            ChannelState.connectionState.set(ch, ConnectionState.READY);
+                        }
+                        break;
+                }
+                
+                switch (model.getDeviceStateByUUID(ChannelState.uuid.get(ch))){
+                    case -1: //init
+                    case 0:
+                        ChannelState.connDeviceState.set(ch, ConnDeviceState.INIT);
+                        break;
+                    case 1: // sync
+                        ChannelState.connDeviceState.set(ch, ConnDeviceState.SYNC);   
+                        break;
+                    case 2: // idle
+                        ChannelState.connDeviceState.set(ch, ConnDeviceState.IDLE);
+                        break;
+                    case 3: // move
+                        ChannelState.connDeviceState.set(ch, ConnDeviceState.MOVE);
+                        break;
+                }
+            }
+//            float[] pos = hcvengine.HCVEngineModel.tranformWorldToWindow(hcvengine.HCVEngineModel.getVOMainPosition());
+//            logger.log(Level.INFO, "VOMain position World({0}, {1}) - Window({2}, {3}).", 
+//                    new Object[]{hcvengine.HCVEngineModel.transformWindowToWorld(pos[0], pos[1]).x, hcvengine.HCVEngineModel.transformWindowToWorld(pos[0], pos[1]).y, pos[0], pos[1]});             
+            
+        }
+    }
+}
+
+/**
+ *
+ * @author demo
+ */
+public class HCVEAsyncServer {
+    public static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
+    //ChannelGroup constrcut requires name of the group as a parameter.
+    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));
+    
+    static final int iPort = 7788;
+    static final int iMaxNumOfConn = 2;
+    static final DecimalFormat df = new DecimalFormat("+###.##;-###.##");
+
+    public HCVEAsyncServer() {
+    }
+
+    public void run() {
+        HCVEngineModel model = new HCVEngineModel();
+        Thread engineControl = new Thread(new EngineController(model));                
+        Thread channelControl = new Thread(new ChannelController(model));        
+        engineControl.start();
+        channelControl.start();
+        
+        
+        logger.log(Level.INFO, "Controller begins.");
+
+        ServerBootstrap bootstrap = new ServerBootstrap(
+                new NioServerSocketChannelFactory(
+                Executors.newCachedThreadPool(), Executors.newCachedThreadPool()));
+
+        //server factory
+        ServerPipelineFactory factory = new ServerPipelineFactory();
+        bootstrap.setPipelineFactory(factory);
+        bootstrap.setOption("child.tcpNoDelay", true);
+        bootstrap.setOption("child.keepAlive", true);
+        //bootstrap.setOption("reusedAddress", true);
+
+        bootstrap.bind(new InetSocketAddress(iPort));
+    }
+
+    /**
+     * @param args the command line arguments
+     */
+    public static void main(String[] args) {
+        new HCVEAsyncServer().run();
+    }
+    
+}
+
+
+// to-be-abandomed
 class Monitor extends Thread {
 
     static final Logger logger = HCVEAsyncServer.logger;
@@ -593,17 +384,77 @@ class Monitor extends Thread {
 }
 
 
+/*
+ * to-be-abandomed
+ */
 class EngineHandler extends Thread {
     static final Logger logger = HCVEAsyncServer.logger;
+    static final float sizeVOMain = 50.f;
     static final HCVEngine engine = new HCVEngine();
-    static final float vr_size = 50.f;
-    static String sVOMain = null;
+    static Float[] position = new Float[]{50f, 50f};
     
-    public static float[] getVOMainPosition() {
-        return engine.getPosition(sVOMain);
+    public static Float[] getFauxPosition(){
+        Float[] retPos;
+        synchronized (position){
+            retPos = position.clone();
+        }
+        return retPos;
+    }
+    
+    public static void setFauxPosition(float[] xy){
+        synchronized(position){
+            position[0] = xy[0];
+            position[1] = xy[1];
+        }
+    }
+    
+    public float[] getWindowSize(){
+        return engine.getWindowSize();
+    }
+    
+    public static float[] getPosition(String sUUID) {
+        return engine.getPosition(sUUID);
+    }
+        
+    public static float[] getVelocity(String sUUID) {
+        return engine.getLinearSpeed(sUUID);
+    }
+    
+    public static String joinGame() {
+        return engine.initMJ();
+        //return engine.initFauxMJ();
+    }
+    
+    public static void quitGame(String sUUID) {
+        engine.destroyMJ(sUUID);
+        //engine.destroyFauxMJ(sUUID);
+    }
+    
+    public static void update(String sUUID, float x, float y) {
+        engine.updateMJMove(sUUID, x, y);
+        //engine.updateFauxMJ(sUUID, x, y);
     }
     
     @Override
+    public void run(){        
+        engine.initWorld();
+        float[] windowSize = getWindowSize();
+        String sVOMain = engine.initVOMain(windowSize[0]*0.5f, windowSize[1], sizeVOMain*0.5f, sizeVOMain*0.5f, 1.f);
+        setFauxPosition(new float[]{windowSize[0]*0.5f, windowSize[1]});
+        logger.log(Level.INFO, "An VRObject created, id={0}", new Object[]{sVOMain});
+
+        Float[] pos;
+        while (true){
+            engine.step();
+            
+            //position = getPosition(sVOMain);
+            setFauxPosition(getPosition(sVOMain));
+            //pos = getFauxPosition();
+            //logger.log(Level.INFO, "VOMain: Position({0}, {1}), Velocity-y({2})", new Object[]{pos[0], pos[1], getVelocity(sVOMain)[1]});
+            //Thread.sleep(10);
+        }
+    }    
+    /*
     public void run(){
         try {
             engine.plotWindow();
@@ -612,70 +463,17 @@ class EngineHandler extends Thread {
             sVOMain = engine.plotVObject(vr_size*0.5f, vr_size*0.5f, windowSize[0]*0.5f, 0.f, 0.f, 800.f);
             logger.log(Level.INFO, "An VRObject created, id={0}", new Object[]{sVOMain});
             
-            float[] pos;
+            
+           float[] speed;
             while (true){
                 engine.step();
-                pos = engine.getPosition(sVOMain);
-                logger.log(Level.INFO, "id[{0}], ({1}, {2})", new Object[]{sVOMain, pos[0], pos[1]});
-                Thread.sleep(0);
+                posVOMain = engine.getPosition(sVOMain);
+                speed = engine.getLinearSpeed(sVOMain);
+                //logger.log(Level.INFO, "VOMain: Position({0}, {1}), Velocity({2}, {3})", new Object[]{posVOMain[0], posVOMain[1], speed[0], speed[1]});
+                Thread.sleep(10);
             }
-        } catch (InterruptedException e){
-            
+        } catch (InterruptedException  e){
         }
     }
-}
-
-
-/**
- *
- * @author demo
- */
-public class HCVEAsyncServer {
-
-    public static final Logger logger = Logger.getLogger(ServerPipelineFactory.class.getName());
-    //ChannelGroup constrcut requires name of the group as a parameter.    
-    static final ChannelGroup channelgroup = new DefaultChannelGroup(HCVEAsyncServer.class.getName().concat("_current"));
-    
-    static final int iPort = 7788;
-    static final int iMaxNumOfConn = 2;
-    static final boolean isMonitorUp = true;
-    static final DecimalFormat df = new DecimalFormat("+###.##;-###.##");
-
-    public HCVEAsyncServer() {
-    }
-
-    public void run() {
-        // monitor
-        Monitor.initWriteTS();
-        if (isMonitorUp) {
-            Monitor monitor = new Monitor();
-            monitor.start();
-            logger.log(Level.INFO, "Monitor starts.");
-        }
-
-        // engine
-        EngineHandler ehdr = new EngineHandler();
-        ehdr.start();
-        
-        ServerBootstrap bootstrap = new ServerBootstrap(
-                new NioServerSocketChannelFactory(
-                Executors.newCachedThreadPool(), Executors.newCachedThreadPool()));
-
-        //server factory
-        ServerPipelineFactory factory = new ServerPipelineFactory();
-
-        bootstrap.setPipelineFactory(factory);
-        bootstrap.setOption("child.tcpNoDelay", true);
-        bootstrap.setOption("child.keepAlive", true);
-        //bootstrap.setOption("reusedAddress", true);
-
-        bootstrap.bind(new InetSocketAddress(iPort));
-    }
-
-    /**
-     * @param args the command line arguments
-     */
-    public static void main(String[] args) {
-        new HCVEAsyncServer().run();
-    }
+    */ 
 }
